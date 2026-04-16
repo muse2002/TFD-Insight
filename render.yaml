@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: tfd-insight-crawler
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app --timeout 120 --workers 1"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: ANTHROPIC_API_KEY
+        sync: false   # 대시보드에서 수동 입력 (비밀값)
