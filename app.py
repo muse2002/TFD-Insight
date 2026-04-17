@@ -23,7 +23,9 @@ from crawler import (
     crawl_reddit,
     crawl_dc,
     classify_and_tag,
-    sentiment_batch_ai,
+    sentiment_batch,
+    translate_posts,
+    extract_keywords_from_posts,
     DEFAULT_CONFIG,
 )
 
@@ -95,15 +97,38 @@ def crawl():
         cfg["reddit"] = {**cfg["reddit"], **body["reddit"]}
     if "dc" in body:
         cfg["dc"] = {**cfg["dc"], **body["dc"]}
-    if "primary_keywords" in body:
-        cfg["primary_keywords"] = body["primary_keywords"]
-    if "secondary_keywords" in body:
-        cfg["secondary_keywords"] = body["secondary_keywords"]
-    if "primary_aliases" in body:
-        cfg["primary_aliases"] = {**cfg.get("primary_aliases", {}), **body["primary_aliases"]}
-    if "secondary_aliases" in body:
-        cfg["secondary_aliases"] = {**cfg.get("secondary_aliases", {}), **body["secondary_aliases"]}
-    cfg["use_ai_sentiment"] = body.get("use_ai_sentiment", True)
+
+    # 새 구조: categories (우선 적용)
+    if "categories" in body and isinstance(body["categories"], list):
+        # 프론트에서 온 카테고리 구조를 crawler 형식으로 변환
+        # 프론트 형식: {name, keywords: ["질럿", "드라군"]}  (문자열 배열)
+        # crawler 형식: {name, keywords: [{value, aliases}]}
+        cfg["categories"] = [
+            {
+                "name": cat.get("name", ""),
+                "keywords": [
+                    {"value": kw, "aliases": []} if isinstance(kw, str) else kw
+                    for kw in cat.get("keywords", [])
+                ],
+            }
+            for cat in body["categories"]
+            if cat.get("name")
+        ]
+    # 구 구조 호환 (categories가 없을 때만)
+    elif "primary_keywords" in body or "secondary_keywords" in body:
+        if "primary_keywords" in body:
+            cfg["primary_keywords"] = body["primary_keywords"]
+        if "secondary_keywords" in body:
+            cfg["secondary_keywords"] = body["secondary_keywords"]
+        if "primary_aliases" in body:
+            cfg["primary_aliases"] = {**cfg.get("primary_aliases", {}), **body["primary_aliases"]}
+        if "secondary_aliases" in body:
+            cfg["secondary_aliases"] = {**cfg.get("secondary_aliases", {}), **body["secondary_aliases"]}
+        cfg.pop("categories", None)   # 구 구조일 때 새 필드 제거 (classify_and_tag가 legacy 변환)
+
+    # 번역 설정
+    if "translate_english" in body:
+        cfg["translate_english"] = bool(body["translate_english"])
 
     # 동기 실행 (Render Free는 타임아웃이 길지 않으므로 빠르게 처리)
     try:
@@ -130,10 +155,15 @@ def crawl():
             )
             return jsonify({"error": "키워드 매칭된 게시글이 없습니다", "collected": len(all_posts), "items": []}), 200
 
-        update_state(status="analyzing", message=f"AI 감성분석 중... ({len(classified)}건)", progress=70)
-        sentiments = sentiment_batch_ai(classified, cfg)
+        update_state(status="analyzing", message=f"감성분석 중... ({len(classified)}건)", progress=70)
+        sentiments = sentiment_batch(classified, cfg)
         for p, s in zip(classified, sentiments):
             p["sentiment"] = s if s in ("긍정", "부정", "개선") else "개선"
+
+        # 영어 게시글 번역 (Reddit)
+        if cfg.get("translate_english", True):
+            update_state(message="영어 게시글 번역 중...", progress=85)
+            translate_posts(classified)
 
         for i, p in enumerate(classified):
             p["id"] = i + 1
@@ -172,6 +202,80 @@ def crawl():
             last_run=datetime.utcnow().isoformat(),
             error=err_msg,
         )
+        return jsonify({"error": err_msg}), 500
+
+
+@app.route("/discover", methods=["POST", "OPTIONS"])
+def discover():
+    """키워드 발견 API:
+    시드(예상) 키워드로 게시글을 수집한 뒤, 자주 등장하는 단어를 빈도순으로 반환.
+    사용자가 이 중에서 2차 키워드를 선택하는 흐름.
+    """
+    if request.method == "OPTIONS":
+        return "", 204
+
+    try:
+        body = request.get_json() or {}
+    except Exception:
+        body = {}
+
+    seed_keywords = body.get("seed_keywords", [])
+    if not seed_keywords or not isinstance(seed_keywords, list):
+        return jsonify({"error": "seed_keywords가 필요합니다 (예: [\"격돌\", \"tower defense\"])"}), 400
+
+    cfg = {**DEFAULT_CONFIG}
+    if "reddit" in body:
+        cfg["reddit"] = {**cfg["reddit"], **body["reddit"]}
+    if "dc" in body:
+        cfg["dc"] = {**cfg["dc"], **body["dc"]}
+
+    top_n = body.get("top_n", 40)
+
+    try:
+        update_state(status="crawling", message="키워드 발견: 게시글 수집 중...", progress=20, error=None)
+
+        all_posts = []
+        if cfg["reddit"].get("enabled", True):
+            all_posts.extend(crawl_reddit(cfg["reddit"]))
+        if cfg["dc"].get("enabled", True):
+            all_posts.extend(crawl_dc(cfg["dc"]))
+
+        if not all_posts:
+            update_state(status="done", message="수집된 게시글 없음", progress=100)
+            return jsonify({"error": "수집된 게시글이 없습니다", "keywords": [], "post_count": 0}), 200
+
+        # 시드 키워드가 포함된 게시글만 필터링
+        filtered = []
+        for p in all_posts:
+            text_lower = p["text"].lower()
+            if any(seed.lower() in text_lower for seed in seed_keywords):
+                filtered.append(p)
+
+        if not filtered:
+            update_state(status="done", message="시드 키워드와 매칭된 게시글 없음", progress=100)
+            return jsonify({
+                "error": f"'{', '.join(seed_keywords)}' 키워드가 포함된 게시글이 없습니다",
+                "keywords": [],
+                "post_count": 0,
+                "total_collected": len(all_posts),
+            }), 200
+
+        update_state(message=f"키워드 추출 중... ({len(filtered)}건)", progress=70)
+        discovered = extract_keywords_from_posts(filtered, seed_keywords=seed_keywords, top_n=top_n)
+
+        update_state(status="done", message=f"키워드 {len(discovered)}개 발견", progress=100)
+
+        return jsonify({
+            "ok": True,
+            "keywords": discovered,
+            "post_count": len(filtered),
+            "total_collected": len(all_posts),
+            "seed_keywords": seed_keywords,
+        })
+
+    except Exception as e:
+        err_msg = str(e)
+        update_state(status="error", message=f"에러: {err_msg}", progress=0, error=err_msg)
         return jsonify({"error": err_msg}), 500
 
 
