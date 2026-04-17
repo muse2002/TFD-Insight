@@ -1,20 +1,16 @@
 """
 TFD Insight Crawler
 ====================
-Reddit + DC갤러리 게시글을 크롤링해서 Claude API로 감성 분석 후 JSON 출력.
+Reddit + DC갤러리 게시글을 크롤링해서 룰 기반 감성 분석 후 JSON 출력.
 
 사용법:
     1) 의존성 설치
-       pip install requests beautifulsoup4 anthropic
+       pip install requests beautifulsoup4
 
-    2) 환경변수 설정 (선택, AI 감성분석 사용 시)
-       Windows: set ANTHROPIC_API_KEY=sk-ant-...
-       Mac/Linux: export ANTHROPIC_API_KEY=sk-ant-...
-
-    3) config.json 편집 후 실행
+    2) config.json 편집 후 실행
        python crawler.py
 
-    4) 생성된 data.json을 TFD Insight HTML의 Upload JSON 버튼에 올리기
+    3) 생성된 data.json을 TFD Insight HTML의 Upload JSON 버튼에 올리기
 """
 
 import json
@@ -33,12 +29,7 @@ except ImportError:
     print("필수 패키지를 설치해주세요: pip install requests beautifulsoup4")
     sys.exit(1)
 
-# Anthropic SDK는 옵션 (없으면 키워드 룰 분석으로 폴백)
-try:
-    from anthropic import Anthropic
-    HAS_ANTHROPIC = True
-except ImportError:
-    HAS_ANTHROPIC = False
+
 
 
 # =====================================================
@@ -61,25 +52,32 @@ DEFAULT_CONFIG = {
         "date_start": "2026-04-09",
         "date_end": "2026-04-16",
     },
-    "primary_keywords": ["타워디펜스", "밸런스", "신규컨텐츠"],
-    "secondary_keywords": ["포탑", "바리케이트", "웨이브", "스킬", "캐릭터", "던전", "보상"],
-    "primary_aliases": {
-        "타워디펜스": ["tower defense", "td", "방어전", "수성"],
-        "밸런스": ["balance", "balancing", "nerf", "buff", "너프", "버프"],
-        "신규컨텐츠": ["new content", "update", "patch", "업데이트", "패치"],
-    },
-    "secondary_aliases": {
-        "포탑": ["turret", "터렛"],
-        "바리케이트": ["barricade", "바리케이드", "벽"],
-        "웨이브": ["wave"],
-        "스킬": ["skill", "ability"],
-        "캐릭터": ["character", "descendant", "계승자"],
-        "던전": ["dungeon", "레이드"],
-        "보상": ["reward", "drop", "loot", "드랍", "드롭"],
-    },
-    "use_ai_sentiment": True,      # Claude API 사용 여부
-    "claude_model": "claude-opus-4-7",
+    "categories": [
+        {
+            "name": "타워디펜스",
+            "keywords": [
+                {"value": "포탑", "aliases": ["turret", "터렛"]},
+                {"value": "바리케이트", "aliases": ["barricade", "바리케이드", "벽"]},
+                {"value": "웨이브", "aliases": ["wave"]},
+            ],
+        },
+        {
+            "name": "밸런스",
+            "keywords": [
+                {"value": "스킬", "aliases": ["skill", "ability"]},
+                {"value": "캐릭터", "aliases": ["character", "descendant", "계승자"]},
+            ],
+        },
+        {
+            "name": "신규컨텐츠",
+            "keywords": [
+                {"value": "던전", "aliases": ["dungeon", "레이드"]},
+                {"value": "보상", "aliases": ["reward", "drop", "loot", "드랍", "드롭"]},
+            ],
+        },
+    ],
     "output_path": "data.json",
+    "translate_english": True,  # 영어 게시글 한국어 자동 번역
 }
 
 
@@ -138,6 +136,67 @@ def crawl_reddit(cfg):
         })
     print(f"[reddit] {len(posts)}건 수집 완료")
     return posts
+
+
+# =====================================================
+# 번역 (MyMemory 무료 API, 키 불필요)
+# =====================================================
+def translate_to_korean(text, max_chars=500):
+    """영어 텍스트를 한국어로 번역. MyMemory 무료 API 사용.
+    실패 시 None 반환. 긴 텍스트는 max_chars로 잘라서 번역."""
+    if not text or not text.strip():
+        return None
+    # 너무 긴 텍스트는 잘라서 번역 (API limit 500자)
+    snippet = text[:max_chars]
+    try:
+        r = requests.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": snippet, "langpair": "en|ko"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        translated = data.get("responseData", {}).get("translatedText", "")
+        # API가 에러 메시지를 번역문으로 반환하는 경우 필터
+        if "MYMEMORY WARNING" in translated.upper() or "INVALID" in translated.upper():
+            return None
+        return translated.strip() or None
+    except Exception as e:
+        print(f"[translate] 실패: {e}")
+        return None
+
+
+def is_mostly_english(text):
+    """텍스트가 주로 영어인지 간이 판정 (한글 비율이 10% 미만이면 영어로 간주)"""
+    if not text:
+        return False
+    korean_chars = sum(1 for c in text if '\uac00' <= c <= '\ud7a3')
+    total_chars = sum(1 for c in text if c.isalpha())
+    if total_chars == 0:
+        return False
+    return (korean_chars / total_chars) < 0.1
+
+
+def translate_posts(posts):
+    """영어 게시글에 한국어 번역 추가 (text_ko 필드)"""
+    english_posts = [p for p in posts if is_mostly_english(p.get("text", ""))]
+    if not english_posts:
+        return posts
+
+    print(f"[translate] 영어 게시글 {len(english_posts)}건 번역 중...")
+    for i, p in enumerate(english_posts):
+        translated = translate_to_korean(p["text"])
+        if translated:
+            p["text_ko"] = translated
+        # API rate limit 방지 (초당 1회)
+        if i < len(english_posts) - 1:
+            time.sleep(0.6)
+        if (i + 1) % 10 == 0:
+            print(f"[translate] {i+1}/{len(english_posts)} 완료")
+    print(f"[translate] 번역 완료")
+    return posts
+
 
 
 # =====================================================
@@ -261,44 +320,152 @@ def parse_dc_date(date_str):
 
 
 # =====================================================
-# 키워드 매칭 (1차 필터 + 2차 태깅, OR 매칭)
+# 키워드 매칭 (카테고리 그룹 기반 OR 매칭)
 # =====================================================
-def match_keywords(text, keywords, aliases):
-    """text에서 매칭되는 키워드 리스트 반환 (canonical name)"""
-    text_lower = text.lower()
-    matched = []
-    for kw in keywords:
-        patterns = [kw.lower()] + [a.lower() for a in aliases.get(kw, [])]
-        if any(p in text_lower for p in patterns):
-            matched.append(kw)
-    return matched
+def match_keyword(text_lower, value, aliases):
+    """단일 키워드가 텍스트에 매칭되는지 확인"""
+    patterns = [value.lower()] + [a.lower() for a in aliases]
+    return any(p in text_lower for p in patterns)
 
 
 def classify_and_tag(posts, cfg):
-    """1차 키워드로 필터링, 2차 키워드로 태그 부여"""
-    primary_kws = cfg["primary_keywords"]
-    secondary_kws = cfg["secondary_keywords"]
-    primary_aliases = cfg.get("primary_aliases", {})
-    secondary_aliases = cfg.get("secondary_aliases", {})
+    """카테고리 구조 기반 분류:
+    - 각 게시글에서 활성화된 2차 키워드를 찾는다
+    - 첫 매칭 카테고리를 primary로 지정 (중복 방지)
+    - 같은 카테고리 내 모든 매칭 키워드를 tags에 저장
+
+    입력 cfg 형식:
+        {
+            "categories": [
+                {"name": "프로토스", "keywords": [{"value": "질럿", "aliases": [...]}, ...]},
+                ...
+            ]
+        }
+    구버전 호환: primary_keywords/secondary_keywords가 있으면 categories로 변환
+    """
+    # 구버전 호환 처리 (primary_keywords + secondary_keywords → categories)
+    if "categories" not in cfg or not cfg["categories"]:
+        categories = _legacy_to_categories(cfg)
+    else:
+        categories = cfg["categories"]
+
+    if not categories:
+        return []
 
     result = []
     for p in posts:
-        p1 = match_keywords(p["text"], primary_kws, primary_aliases)
-        if not p1:
-            continue   # 1차 키워드 매칭 없으면 드랍
-        tags = match_keywords(p["text"], secondary_kws, secondary_aliases)
-        if not tags:
-            continue   # 2차 태그 없으면 드랍 (대시보드에서 쓸 수 없음)
+        text_lower = p["text"].lower()
 
-        p["primary"] = p1[0]   # 대표 1차 키워드 하나만 (가장 먼저 매칭된 것)
-        p["tags"] = tags
+        # 각 카테고리를 순회하며 매칭되는 첫 카테고리 찾기
+        matched_category = None
+        matched_tags = []
+
+        for cat in categories:
+            cat_name = cat["name"]
+            keywords = cat.get("keywords", [])
+
+            # 이 카테고리에서 매칭되는 모든 키워드 수집
+            tags_in_cat = []
+            for kw in keywords:
+                # kw가 문자열이면 {"value": kw, "aliases": []}로 처리
+                if isinstance(kw, str):
+                    value, aliases = kw, []
+                else:
+                    value = kw.get("value", "")
+                    aliases = kw.get("aliases", [])
+
+                if value and match_keyword(text_lower, value, aliases):
+                    tags_in_cat.append(value)
+
+            # 이 카테고리에서 매칭된 키워드가 있으면 이 카테고리로 확정
+            if tags_in_cat:
+                matched_category = cat_name
+                matched_tags = tags_in_cat
+                break   # 첫 매칭 카테고리만 사용 (중복 방지)
+
+        if matched_category is None:
+            continue   # 어떤 카테고리에도 매칭되지 않으면 드랍
+
+        p["primary"] = matched_category
+        p["tags"] = matched_tags
         result.append(p)
 
     return result
 
 
+def _legacy_to_categories(cfg):
+    """구버전 flat 키워드 구조를 카테고리 구조로 변환 (백엔드 단독 실행 호환용)"""
+    primary_kws = cfg.get("primary_keywords", [])
+    secondary_kws = cfg.get("secondary_keywords", [])
+    secondary_aliases = cfg.get("secondary_aliases", {})
+
+    if not primary_kws or not secondary_kws:
+        return []
+
+    return [{
+        "name": primary_kws[0],
+        "keywords": [
+            {"value": kw, "aliases": secondary_aliases.get(kw, [])}
+            for kw in secondary_kws
+        ],
+    }]
+
+
 # =====================================================
-# Claude API 감성분석 (없으면 룰 기반 폴백)
+# 키워드 발견 (게시글에서 자주 나온 단어 추출)
+# =====================================================
+
+STOPWORDS_KO = set("이 가 은 는 을 를 의 에 에서 으로 로 와 과 도 만 까지 부터 보다 처럼 같이 것 수 등 중 때 위 후 뒤 더 또 및 그 저 이런 저런 그런 합니다 한다 하다 있다 없다 되다 않다 이다 해서 하고 해요 입니다 ㅋㅋ ㅎㅎ ㅋㅋㅋ ㅎㅎㅎ ㅋㅋㅋㅋ ㅠㅠ ㅜㅜ ㄹㅇ ㅇㅇ ㄴㄴ ㅡㅡ 진짜 좀 너무 많이 다 안 못 왜 뭐 걍 근데 아 오 음 게임 하는 같은 있는 없는 되는 하는 해야 에서".split())
+STOPWORDS_EN = set("the a an is are was were be been being have has had do does did will would shall should may might can could i me my we our you your he she it they them their its this that these those am not no nor so if or but and to of in for on at by from with as about into through during before after above below between out up down off over under again further then once here there when where why how all each every both few more most other some such only own same than too very just game games like really think make need want get got going been much also even still".split())
+
+
+def extract_keywords_from_posts(posts, seed_keywords=None, top_n=40, min_length=2):
+    """게시글에서 자주 등장하는 키워드를 빈도순으로 추출.
+
+    Args:
+        posts: 게시글 리스트 [{text, source, ...}, ...]
+        seed_keywords: 시드(씨앗) 키워드 — 결과에서 제외 (이미 알고 있는 단어)
+        top_n: 반환할 키워드 수
+        min_length: 최소 글자 수
+
+    Returns:
+        [{"word": "포탑", "count": 47, "sources": {"Reddit": 30, "DC갤러리": 17}}, ...]
+    """
+    seed_set = set(w.lower() for w in (seed_keywords or []))
+    word_data = {}
+
+    for post in posts:
+        text = post.get("text", "")
+        source = post.get("source", "unknown")
+
+        # 한글 2글자 이상 또는 영문 2글자 이상인 단어만 추출
+        words_raw = re.findall(r'[가-힣]{2,}|[a-zA-Z]{2,}', text)
+
+        # 한 게시글에서 같은 단어 여러 번 나와도 1회로 카운트
+        seen_in_post = set()
+        for w in words_raw:
+            w_lower = w.lower()
+            if len(w) < min_length:
+                continue
+            if w_lower in STOPWORDS_KO or w_lower in STOPWORDS_EN:
+                continue
+            if w_lower in seed_set:
+                continue
+            if w_lower in seen_in_post:
+                continue
+            seen_in_post.add(w_lower)
+
+            if w_lower not in word_data:
+                word_data[w_lower] = {"word": w, "count": 0, "sources": {}}
+            word_data[w_lower]["count"] += 1
+            word_data[w_lower]["sources"][source] = word_data[w_lower]["sources"].get(source, 0) + 1
+
+    sorted_words = sorted(word_data.values(), key=lambda x: x["count"], reverse=True)
+    return sorted_words[:top_n]
+
+
+# =====================================================
+# 룰 기반 감성분석 (한/영 감성 단어 사전)
 # =====================================================
 RULE_POS = ["좋다", "좋네", "좋음", "굿", "재밌", "최고", "만족", "감사", "잘만", "멋짐", "good", "great", "love", "amazing", "awesome", "best", "nice", "fun"]
 RULE_NEG = ["별로", "싫다", "싫어", "쓰레기", "망함", "노잼", "화남", "짜증", "답없", "ㅡㅡ", "bad", "awful", "terrible", "worst", "useless", "broken", "nerf", "너프"]
@@ -319,58 +486,9 @@ def sentiment_rule(text):
     return "개선" if imp else "긍정"
 
 
-def sentiment_batch_ai(posts, cfg):
-    """Claude에게 배치로 감성 분석 요청"""
-    if not HAS_ANTHROPIC or not cfg.get("use_ai_sentiment"):
-        return [sentiment_rule(p["text"]) for p in posts]
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("[ai] ANTHROPIC_API_KEY 환경변수 없음, 룰 기반으로 폴백")
-        return [sentiment_rule(p["text"]) for p in posts]
-
-    client = Anthropic()
-    model = cfg.get("claude_model", "claude-opus-4-7")
-    results = []
-
-    # 배치 크기 8
-    BATCH = 8
-    for i in range(0, len(posts), BATCH):
-        chunk = posts[i:i + BATCH]
-        numbered = "\n\n".join([f"[{j+1}] {p['text'][:500]}" for j, p in enumerate(chunk)])
-        prompt = f"""게임 커뮤니티 게시글 {len(chunk)}건의 감성을 분류해주세요.
-
-각 게시글은 다음 3가지 중 하나:
-- 긍정: 칭찬, 만족, 즐거움
-- 부정: 불만, 비판, 비난
-- 개선: 요청사항, 제안, 아이디어 (부정보다 건설적인 톤)
-
-게시글:
-{numbered}
-
-응답은 반드시 아래 JSON 배열 형식으로만 출력하세요. 설명 없이 JSON만.
-["긍정","부정",...]"""
-
-        try:
-            msg = client.messages.create(
-                model=model,
-                max_tokens=200,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = msg.content[0].text.strip()
-            # JSON 배열 추출
-            m = re.search(r"\[.*\]", text, re.DOTALL)
-            if not m:
-                raise ValueError("JSON 배열 없음")
-            arr = json.loads(m.group())
-            if len(arr) != len(chunk):
-                raise ValueError(f"개수 불일치: {len(arr)} vs {len(chunk)}")
-            results.extend(arr)
-            print(f"[ai] {i+len(chunk)}/{len(posts)} 분석 완료")
-        except Exception as e:
-            print(f"[ai] 배치 {i} 실패, 룰 기반 폴백: {e}")
-            results.extend([sentiment_rule(p["text"]) for p in chunk])
-        time.sleep(0.5)
-
-    return results
+def sentiment_batch(posts, cfg=None):
+    """게시글 리스트에 대해 감성 분류 (룰 기반)"""
+    return [sentiment_rule(p["text"]) for p in posts]
 
 
 # =====================================================
@@ -403,11 +521,15 @@ def main():
         print("키워드 매칭 결과가 없습니다. primary/secondary 키워드 또는 aliases를 확인해주세요.")
         return
 
-    # 감성 분석
-    print(f"\n감성 분석 시작 ({'Claude AI' if cfg.get('use_ai_sentiment') and HAS_ANTHROPIC else '룰 기반'})...")
-    sentiments = sentiment_batch_ai(classified, cfg)
+    # 감성 분석 (룰 기반)
+    print(f"\n감성 분석 시작 (룰 기반)...")
+    sentiments = sentiment_batch(classified, cfg)
     for p, s in zip(classified, sentiments):
         p["sentiment"] = s if s in ("긍정", "부정", "개선") else "개선"
+
+    # 영어 게시글 번역 (Reddit → 한글)
+    if cfg.get("translate_english", True):
+        translate_posts(classified)
 
     # id 부여
     for i, p in enumerate(classified):
