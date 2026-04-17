@@ -200,7 +200,7 @@ def translate_posts(posts):
 
 
 # =====================================================
-# DC갤러리 크롤러 (모바일 페이지 HTML 파싱)
+# DC갤러리 크롤러 (PC 버전, 마이너 갤러리 지원)
 # =====================================================
 def crawl_dc(cfg):
     if not cfg.get("enabled"):
@@ -215,12 +215,13 @@ def crawl_dc(cfg):
 
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-        "Referer": "https://m.dcinside.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://gall.dcinside.com/",
     })
 
     for page in range(1, pages + 1):
-        list_url = f"https://m.dcinside.com/board/{gall_id}?page={page}"
+        # PC 버전 마이너 갤러리 URL
+        list_url = f"https://gall.dcinside.com/mgallery/board/lists/?id={gall_id}&page={page}"
         try:
             r = session.get(list_url, timeout=15)
             if r.status_code != 200:
@@ -231,60 +232,81 @@ def crawl_dc(cfg):
             break
 
         soup = BeautifulSoup(r.text, "html.parser")
-        # 게시글 링크 찾기 (모바일 레이아웃 기준, 실제 셀렉터는 시점에 따라 조정 필요)
-        links = soup.select("a.gall-detail-lnktb, a[href*='/board/'][href*='/view/']")
+
+        # 게시글 목록: <tr class="ub-content us-post"> 안의 각 행
+        rows = soup.select("tr.ub-content.us-post")
+        if not rows:
+            print(f"[dc] page {page}: 게시글 행 없음 (셀렉터 불일치 가능)")
+            break
+
         found_in_page = 0
-
-        for a in links:
-            href = a.get("href", "")
-            if "/view/" not in href and "no=" not in href:
-                continue
-            if not href.startswith("http"):
-                href = "https://m.dcinside.com" + href
-
+        for row in rows:
             try:
-                detail = session.get(href, timeout=15)
-                if detail.status_code != 200:
+                # 글 유형 (공지/설문/AD 등은 건너뛰기)
+                subject_el = row.select_one("td.gall_subject")
+                if subject_el:
+                    subject_text = subject_el.get_text(strip=True)
+                    if subject_text in ("공지", "설문", "AD"):
+                        continue
+
+                # 제목 추출
+                title_el = row.select_one("td.gall_tit a")
+                if not title_el:
                     continue
-            except Exception:
-                continue
+                title = title_el.get_text(strip=True)
+                if not title:
+                    continue
 
-            dsoup = BeautifulSoup(detail.text, "html.parser")
+                # URL 추출
+                href = title_el.get("href", "")
+                if not href.startswith("http"):
+                    href = "https://gall.dcinside.com" + href
 
-            title_el = dsoup.select_one("span.tit, h3, .gallview-tit-box .tit")
-            body_el = dsoup.select_one(".thum-txtin, .gallview-content, .write_div")
-            date_el = dsoup.select_one(".gall-date, .date")
-            rec_el = dsoup.select_one(".btn_recommend .num, .rec-num")
+                # 글 번호 (게시글 고유 번호)
+                num_el = row.select_one("td.gall_num")
+                post_num = num_el.get_text(strip=True) if num_el else ""
 
-            title = title_el.get_text(strip=True) if title_el else ""
-            body = body_el.get_text("\n", strip=True) if body_el else ""
-            text = f"{title}\n\n{body}".strip() if body else title
-            if not text:
-                continue
+                # 날짜 추출
+                date_el = row.select_one("td.gall_date")
+                date_str = date_el.get("title", "") or date_el.get_text(strip=True) if date_el else ""
+                post_date = parse_dc_date(date_str)
 
-            # 날짜 파싱 (형식이 다양함: 2026.04.15 / 2026-04-15 / 04.15 등)
-            date_str = date_el.get_text(strip=True) if date_el else ""
-            post_date = parse_dc_date(date_str)
-            if post_date is None:
-                continue
-            if not (date_start <= post_date <= date_end):
-                continue
+                # 날짜 필터링 (날짜 파싱 실패하면 오늘 날짜로 대체)
+                if post_date is None:
+                    post_date = datetime.now().date()
+                if not (date_start <= post_date <= date_end):
+                    continue
 
-            upvotes_raw = rec_el.get_text(strip=True) if rec_el else "0"
-            try:
-                upvotes = int(re.sub(r"[^\d]", "", upvotes_raw) or 0)
-            except ValueError:
+                # 추천수
+                rec_el = row.select_one("td.gall_recommend")
                 upvotes = 0
+                if rec_el:
+                    try:
+                        upvotes = int(rec_el.get_text(strip=True) or 0)
+                    except ValueError:
+                        upvotes = 0
 
-            posts.append({
-                "source": "DC갤러리",
-                "text": text,
-                "date": post_date.strftime("%Y-%m-%d"),
-                "upvotes": upvotes,
-                "url": href,
-            })
-            found_in_page += 1
-            time.sleep(0.4)   # 과도한 요청 방지
+                # 조회수
+                count_el = row.select_one("td.gall_count")
+                views = 0
+                if count_el:
+                    try:
+                        views = int(count_el.get_text(strip=True) or 0)
+                    except ValueError:
+                        views = 0
+
+                posts.append({
+                    "source": "DC갤러리",
+                    "text": title,          # 리스트에서는 제목만 수집 (본문 접근은 추가 요청 필요)
+                    "date": post_date.strftime("%Y-%m-%d"),
+                    "upvotes": upvotes,
+                    "views": views,
+                    "url": href,
+                })
+                found_in_page += 1
+
+            except Exception as e:
+                continue
 
         print(f"[dc] page {page}: {found_in_page}건")
         if found_in_page == 0 and page > 1:
