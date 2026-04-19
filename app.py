@@ -94,9 +94,19 @@ def crawl():
     # 설정 병합
     cfg = {**DEFAULT_CONFIG}
     if "reddit" in body:
-        cfg["reddit"] = {**cfg["reddit"], **body["reddit"]}
+        reddit_cfg = {**cfg["reddit"], **body["reddit"]}
+        if "start" in reddit_cfg and "date_start" not in reddit_cfg:
+            reddit_cfg["date_start"] = reddit_cfg.pop("start")
+        if "end" in reddit_cfg and "date_end" not in reddit_cfg:
+            reddit_cfg["date_end"] = reddit_cfg.pop("end")
+        cfg["reddit"] = reddit_cfg
     if "dc" in body:
-        cfg["dc"] = {**cfg["dc"], **body["dc"]}
+        dc_cfg = {**cfg["dc"], **body["dc"]}
+        if "start" in dc_cfg and "date_start" not in dc_cfg:
+            dc_cfg["date_start"] = dc_cfg.pop("start")
+        if "end" in dc_cfg and "date_end" not in dc_cfg:
+            dc_cfg["date_end"] = dc_cfg.pop("end")
+        cfg["dc"] = dc_cfg
 
     # 새 구조: categories (우선 적용)
     if "categories" in body and isinstance(body["categories"], list):
@@ -225,9 +235,20 @@ def discover():
 
     cfg = {**DEFAULT_CONFIG}
     if "reddit" in body:
-        cfg["reddit"] = {**cfg["reddit"], **body["reddit"]}
+        reddit_cfg = {**cfg["reddit"], **body["reddit"]}
+        # 프론트엔드는 start/end, 크롤러는 date_start/date_end 사용
+        if "start" in reddit_cfg and "date_start" not in reddit_cfg:
+            reddit_cfg["date_start"] = reddit_cfg.pop("start")
+        if "end" in reddit_cfg and "date_end" not in reddit_cfg:
+            reddit_cfg["date_end"] = reddit_cfg.pop("end")
+        cfg["reddit"] = reddit_cfg
     if "dc" in body:
-        cfg["dc"] = {**cfg["dc"], **body["dc"]}
+        dc_cfg = {**cfg["dc"], **body["dc"]}
+        if "start" in dc_cfg and "date_start" not in dc_cfg:
+            dc_cfg["date_start"] = dc_cfg.pop("start")
+        if "end" in dc_cfg and "date_end" not in dc_cfg:
+            dc_cfg["date_end"] = dc_cfg.pop("end")
+        cfg["dc"] = dc_cfg
 
     top_n = body.get("top_n", 40)
 
@@ -240,6 +261,8 @@ def discover():
         if cfg["dc"].get("enabled", True):
             all_posts.extend(crawl_dc(cfg["dc"]))
 
+        print(f"[discover] 총 수집: {len(all_posts)}건, 시드: {seed_keywords}")
+
         if not all_posts:
             update_state(status="done", message="수집된 게시글 없음", progress=100)
             return jsonify({"error": "수집된 게시글이 없습니다", "keywords": [], "post_count": 0}), 200
@@ -250,6 +273,13 @@ def discover():
             text_lower = p["text"].lower()
             if any(seed.lower() in text_lower for seed in seed_keywords):
                 filtered.append(p)
+
+        print(f"[discover] 시드 매칭: {len(filtered)}건 / {len(all_posts)}건")
+        # 디버깅: 매칭 안 되면 첫 5개 게시글 제목 출력
+        if not filtered and all_posts:
+            print("[discover] 매칭 실패 — 수집된 게시글 샘플:")
+            for p in all_posts[:5]:
+                print(f"  [{p['source']}] {p['text'][:80]}")
 
         if not filtered:
             update_state(status="done", message="시드 키워드와 매칭된 게시글 없음", progress=100)
