@@ -42,15 +42,15 @@ DEFAULT_CONFIG = {
         "sort": "new",           # new | hot | top
         "time_filter": "week",   # hour | day | week | month | year | all (sort=top일 때만)
         "limit": 50,
-        "date_start": "2026-04-09",
-        "date_end": "2026-04-16",
+        "date_start": "2025-01-01",
+        "date_end": "2099-12-31",
     },
     "dc": {
         "enabled": True,
         "gallery_id": "first_descendant",   # DC 갤러리 id (실제 값으로 교체 필요)
         "pages": 3,
-        "date_start": "2026-04-09",
-        "date_end": "2026-04-16",
+        "date_start": "2025-01-01",
+        "date_end": "2099-12-31",
     },
     "categories": [
         {
