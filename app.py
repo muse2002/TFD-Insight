@@ -218,8 +218,8 @@ def crawl():
 @app.route("/discover", methods=["POST", "OPTIONS"])
 def discover():
     """키워드 발견 API:
-    시드(예상) 키워드로 게시글을 수집한 뒤, 자주 등장하는 단어를 빈도순으로 반환.
-    사용자가 이 중에서 2차 키워드를 선택하는 흐름.
+    Reddit/DC갤러리에서 게시글을 수집한 뒤, 자주 등장하는 단어를 빈도순으로 반환.
+    시드 키워드 없이 전체 게시글에서 추출.
     """
     if request.method == "OPTIONS":
         return "", 204
@@ -229,14 +229,9 @@ def discover():
     except Exception:
         body = {}
 
-    seed_keywords = body.get("seed_keywords", [])
-    if not seed_keywords or not isinstance(seed_keywords, list):
-        return jsonify({"error": "seed_keywords가 필요합니다 (예: [\"격돌\", \"tower defense\"])"}), 400
-
     cfg = {**DEFAULT_CONFIG}
     if "reddit" in body:
         reddit_cfg = {**cfg["reddit"], **body["reddit"]}
-        # 프론트엔드는 start/end, 크롤러는 date_start/date_end 사용
         if "start" in reddit_cfg and "date_start" not in reddit_cfg:
             reddit_cfg["date_start"] = reddit_cfg.pop("start")
         if "end" in reddit_cfg and "date_end" not in reddit_cfg:
@@ -251,6 +246,8 @@ def discover():
         cfg["dc"] = dc_cfg
 
     top_n = body.get("top_n", 40)
+    # 결과에서 제외할 단어 (이미 알고 있는 키워드)
+    exclude_words = body.get("exclude_words", [])
 
     try:
         update_state(status="crawling", message="키워드 발견: 게시글 수집 중...", progress=20, error=None)
@@ -261,46 +258,21 @@ def discover():
         if cfg["dc"].get("enabled", True):
             all_posts.extend(crawl_dc(cfg["dc"]))
 
-        print(f"[discover] 총 수집: {len(all_posts)}건, 시드: {seed_keywords}")
+        print(f"[discover] 총 수집: {len(all_posts)}건")
 
         if not all_posts:
             update_state(status="done", message="수집된 게시글 없음", progress=100)
             return jsonify({"error": "수집된 게시글이 없습니다", "keywords": [], "post_count": 0}), 200
 
-        # 시드 키워드가 포함된 게시글만 필터링
-        filtered = []
-        for p in all_posts:
-            text_lower = p["text"].lower()
-            if any(seed.lower() in text_lower for seed in seed_keywords):
-                filtered.append(p)
-
-        print(f"[discover] 시드 매칭: {len(filtered)}건 / {len(all_posts)}건")
-        # 디버깅: 매칭 안 되면 첫 5개 게시글 제목 출력
-        if not filtered and all_posts:
-            print("[discover] 매칭 실패 — 수집된 게시글 샘플:")
-            for p in all_posts[:5]:
-                print(f"  [{p['source']}] {p['text'][:80]}")
-
-        if not filtered:
-            update_state(status="done", message="시드 키워드와 매칭된 게시글 없음", progress=100)
-            return jsonify({
-                "error": f"'{', '.join(seed_keywords)}' 키워드가 포함된 게시글이 없습니다",
-                "keywords": [],
-                "post_count": 0,
-                "total_collected": len(all_posts),
-            }), 200
-
-        update_state(message=f"키워드 추출 중... ({len(filtered)}건)", progress=70)
-        discovered = extract_keywords_from_posts(filtered, seed_keywords=seed_keywords, top_n=top_n)
+        update_state(message=f"키워드 추출 중... ({len(all_posts)}건)", progress=70)
+        discovered = extract_keywords_from_posts(all_posts, seed_keywords=exclude_words, top_n=top_n)
 
         update_state(status="done", message=f"키워드 {len(discovered)}개 발견", progress=100)
 
         return jsonify({
             "ok": True,
             "keywords": discovered,
-            "post_count": len(filtered),
-            "total_collected": len(all_posts),
-            "seed_keywords": seed_keywords,
+            "post_count": len(all_posts),
         })
 
     except Exception as e:
