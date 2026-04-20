@@ -374,57 +374,17 @@ def crawl_dc(cfg):
                     except ValueError:
                         upvotes = 0
 
-                # 상세 페이지 접속 → 본문 + 댓글 수집
-                body_text = ""
-                comments = []
-                try:
-                    detail = session.get(href, timeout=15)
-                    if detail.status_code == 200:
-                        dsoup = BeautifulSoup(detail.text, "html.parser")
-                        # 본문 추출
-                        body_el = dsoup.select_one(".write_div, .gallview_contents .inner, .writing_view_box")
-                        if body_el:
-                            body_text = body_el.get_text("\n", strip=True)[:300]  # 본문 앞 300자
-
-                        # 댓글 추출
-                        if fetch_comments:
-                            comment_els = dsoup.select(".cmt_txtbox, .usertxt")
-                            for ci, cel in enumerate(comment_els):
-                                if ci >= max_comments_per_post:
-                                    break
-                                ctxt = cel.get_text(strip=True)
-                                if ctxt and len(ctxt) > 2:
-                                    comments.append(ctxt)
-                    time.sleep(0.5)
-                except Exception:
-                    pass
-
-                # 본문 = 제목 + 본문내용
-                full_text = f"{title}\n\n{body_text}".strip() if body_text else title
-
+                # 제목만 수집 (본문은 별도 요청으로)
                 results.append({
                     "source": "DC갤러리",
                     "type": "post",
-                    "text": full_text,
+                    "text": title,
                     "date": post_date.strftime("%Y-%m-%d"),
                     "upvotes": upvotes,
                     "url": href,
                 })
                 post_count += 1
                 found_in_page += 1
-
-                # 댓글 추가
-                for ctxt in comments:
-                    results.append({
-                        "source": "DC갤러리",
-                        "type": "comment",
-                        "text": ctxt,
-                        "date": post_date.strftime("%Y-%m-%d"),
-                        "upvotes": 0,
-                        "url": href,
-                        "parent_title": title[:80],
-                    })
-                    comment_count += 1
 
             except Exception:
                 continue
@@ -434,7 +394,44 @@ def crawl_dc(cfg):
             break
         time.sleep(0.8)
 
-    print(f"[dc] 본문 {post_count}건 + 댓글 {comment_count}건 = 총 {len(results)}건 수집 완료")
+    print(f"[dc] {post_count}건 수집 완료 (제목만)")
+    return results
+
+
+def fetch_dc_details(urls):
+    """DC갤러리 게시글 URL 배열을 받아서 본문 + 댓글을 수집하여 반환.
+    20건 단위로 호출하면 타임아웃/메모리 문제 없음."""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://gall.dcinside.com/",
+    })
+
+    results = []
+    for i, url in enumerate(urls):
+        entry = {"url": url, "body": "", "comments": []}
+        try:
+            r = session.get(url, timeout=15)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, "html.parser")
+                # 본문
+                body_el = soup.select_one(".write_div, .gallview_contents .inner, .writing_view_box")
+                if body_el:
+                    entry["body"] = body_el.get_text("\n", strip=True)[:500]
+                # 댓글
+                comment_els = soup.select(".cmt_txtbox, .usertxt")
+                for ci, cel in enumerate(comment_els[:10]):
+                    ctxt = cel.get_text(strip=True)
+                    if ctxt and len(ctxt) > 2:
+                        entry["comments"].append(ctxt)
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"[dc-detail] {url} 실패: {e}")
+        results.append(entry)
+        if (i + 1) % 5 == 0:
+            print(f"[dc-detail] {i+1}/{len(urls)} 완료")
+
+    print(f"[dc-detail] 총 {len(results)}건 본문 수집 완료")
     return results
 
 
