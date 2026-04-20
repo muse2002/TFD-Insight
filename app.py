@@ -148,15 +148,6 @@ def crawl():
         for p, s in zip(classified, sentiments):
             p["sentiment"] = s if s in ("긍정", "부정", "개선") else "개선"
 
-        # 영어 게시글 번역 (Reddit)
-        if cfg.get("translate_english", True):
-            update_state(message="영어 게시글 번역 중...", progress=80)
-            translate_posts(classified)
-
-        # AI 요약 (Gemini)
-        update_state(message="게시글 요약 중...", progress=90)
-        summarize_posts(classified)
-
         for i, p in enumerate(classified):
             p["id"] = i + 1
 
@@ -261,6 +252,46 @@ def discover():
         err_msg = str(e)
         update_state(status="error", message=f"에러: {err_msg}", progress=0, error=err_msg)
         return jsonify({"error": err_msg}), 500
+
+
+@app.route("/translate", methods=["POST", "OPTIONS"])
+def translate():
+    """번역 API: 게시글 배열을 받아서 영어 본문에 한국어 번역 추가 후 반환."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        body = request.get_json() or {}
+    except Exception:
+        body = {}
+
+    items = body.get("items", [])
+    if not items:
+        return jsonify({"error": "items가 필요합니다"}), 400
+
+    print(f"[translate] {len(items)}건 번역 요청")
+    translate_posts(items)
+
+    return jsonify({"ok": True, "items": items, "count": len(items)})
+
+
+@app.route("/summarize", methods=["POST", "OPTIONS"])
+def summarize():
+    """요약 API: 게시글 배열을 받아서 AI 요약 추가 후 반환."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        body = request.get_json() or {}
+    except Exception:
+        body = {}
+
+    items = body.get("items", [])
+    if not items:
+        return jsonify({"error": "items가 필요합니다"}), 400
+
+    print(f"[summarize] {len(items)}건 요약 요청")
+    summarize_posts(items)
+
+    return jsonify({"ok": True, "items": items, "count": len(items)})
 
 
 if __name__ == "__main__":
