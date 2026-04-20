@@ -294,6 +294,79 @@ def summarize():
     return jsonify({"ok": True, "items": items, "count": len(items)})
 
 
+@app.route("/report", methods=["POST", "OPTIONS"])
+def report():
+    """분석 보고서 API: 크롤링된 전체 게시글을 Gemini에게 보내서 종합 보고서 생성."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        body = request.get_json() or {}
+    except Exception:
+        body = {}
+
+    items = body.get("items", [])
+    if not items:
+        return jsonify({"error": "items가 필요합니다"}), 400
+
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY가 설정되지 않았습니다"}), 400
+
+    # 게시글을 텍스트로 정리 (최대 4000자)
+    posts_text = ""
+    for i, p in enumerate(items[:50]):
+        source = p.get("source", "")
+        ptype = "본문" if p.get("type") == "post" else "댓글"
+        sentiment = p.get("sentiment", "")
+        tags = ", ".join(p.get("tags", []))
+        text = (p.get("text_ko") or p.get("text", ""))[:150]
+        posts_text += f"[{i+1}] [{source}] [{ptype}] [{sentiment}] [{tags}] {text}\n"
+        if len(posts_text) > 4000:
+            break
+
+    prompt = f"""아래는 게임 '퍼스트 디센던트(The First Descendant)' 커뮤니티(Reddit, DC갤러리)에서 수집한 게시글 {len(items)}건입니다.
+
+이 데이터를 분석하여 한국어로 보고서를 작성해주세요:
+
+1. **전체 요약** (3~5문장으로 현재 커뮤니티 분위기 정리)
+2. **키워드별 분석** (자주 등장하는 키워드별로 유저 피드백 정리)
+3. **긍정 의견** (유저들이 좋아하는 점 3~5개)
+4. **부정 의견** (유저들이 불만인 점 3~5개)
+5. **개선 요청** (유저들이 원하는 변화 3~5개)
+6. **주목할 트렌드** (특이 사항이나 급부상 이슈)
+
+마크다운 형식으로 작성하되, 각 항목은 구체적인 유저 의견을 인용하여 작성해주세요.
+
+게시글 데이터:
+{posts_text}"""
+
+    try:
+        import requests as req
+        r = req.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={api_key}",
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"maxOutputTokens": 2000, "temperature": 0.3},
+            },
+            timeout=60,
+        )
+        if r.status_code != 200:
+            return jsonify({"error": f"Gemini API 에러 {r.status_code}"}), 500
+
+        data = r.json()
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts:
+                report_text = parts[0].get("text", "").strip()
+                return jsonify({"ok": True, "report": report_text})
+
+        return jsonify({"error": "보고서 생성 실패"}), 500
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
