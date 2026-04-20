@@ -300,18 +300,22 @@ def summarize_posts(posts):
 
 
 # =====================================================
-# DC갤러리 크롤러 (PC 버전, 마이너 갤러리 지원)
+# DC갤러리 크롤러 (PC 버전, 본문+댓글 수집)
 # =====================================================
 def crawl_dc(cfg):
     if not cfg.get("enabled"):
         return []
     gall_id = cfg["gallery_id"]
     pages = cfg.get("pages", 3)
-    print(f"[dc] {gall_id} {pages}페이지 수집 중...")
+    fetch_comments = cfg.get("fetch_comments", True)
+    max_comments_per_post = cfg.get("max_comments_per_post", 10)
+    print(f"[dc] {gall_id} {pages}페이지 수집 중... (댓글: {'ON' if fetch_comments else 'OFF'})")
 
-    posts = []
+    results = []
     date_start = datetime.fromisoformat(cfg["date_start"]).date()
     date_end = datetime.fromisoformat(cfg["date_end"]).date()
+    post_count = 0
+    comment_count = 0
 
     session = requests.Session()
     session.headers.update({
@@ -320,7 +324,6 @@ def crawl_dc(cfg):
     })
 
     for page in range(1, pages + 1):
-        # PC 버전 마이너 갤러리 URL
         list_url = f"https://gall.dcinside.com/mgallery/board/lists/?id={gall_id}&page={page}"
         try:
             r = session.get(list_url, timeout=15)
@@ -332,24 +335,18 @@ def crawl_dc(cfg):
             break
 
         soup = BeautifulSoup(r.text, "html.parser")
-
-        # 게시글 목록: <tr class="ub-content us-post"> 안의 각 행
         rows = soup.select("tr.ub-content.us-post")
         if not rows:
-            print(f"[dc] page {page}: 게시글 행 없음 (셀렉터 불일치 가능)")
+            print(f"[dc] page {page}: 게시글 행 없음")
             break
 
         found_in_page = 0
         for row in rows:
             try:
-                # 글 유형 (공지/설문/AD 등은 건너뛰기)
                 subject_el = row.select_one("td.gall_subject")
-                if subject_el:
-                    subject_text = subject_el.get_text(strip=True)
-                    if subject_text in ("공지", "설문", "AD"):
-                        continue
+                if subject_el and subject_el.get_text(strip=True) in ("공지", "설문", "AD"):
+                    continue
 
-                # 제목 추출
                 title_el = row.select_one("td.gall_tit a")
                 if not title_el:
                     continue
@@ -357,27 +354,18 @@ def crawl_dc(cfg):
                 if not title:
                     continue
 
-                # URL 추출
                 href = title_el.get("href", "")
                 if not href.startswith("http"):
                     href = "https://gall.dcinside.com" + href
 
-                # 글 번호 (게시글 고유 번호)
-                num_el = row.select_one("td.gall_num")
-                post_num = num_el.get_text(strip=True) if num_el else ""
-
-                # 날짜 추출
                 date_el = row.select_one("td.gall_date")
                 date_str = date_el.get("title", "") or date_el.get_text(strip=True) if date_el else ""
                 post_date = parse_dc_date(date_str)
-
-                # 날짜 필터링 (날짜 파싱 실패하면 오늘 날짜로 대체)
                 if post_date is None:
                     post_date = datetime.now().date()
                 if not (date_start <= post_date <= date_end):
                     continue
 
-                # 추천수
                 rec_el = row.select_one("td.gall_recommend")
                 upvotes = 0
                 if rec_el:
@@ -386,27 +374,59 @@ def crawl_dc(cfg):
                     except ValueError:
                         upvotes = 0
 
-                # 조회수
-                count_el = row.select_one("td.gall_count")
-                views = 0
-                if count_el:
-                    try:
-                        views = int(count_el.get_text(strip=True) or 0)
-                    except ValueError:
-                        views = 0
+                # 상세 페이지 접속 → 본문 + 댓글 수집
+                body_text = ""
+                comments = []
+                try:
+                    detail = session.get(href, timeout=15)
+                    if detail.status_code == 200:
+                        dsoup = BeautifulSoup(detail.text, "html.parser")
+                        # 본문 추출
+                        body_el = dsoup.select_one(".write_div, .gallview_contents .inner, .writing_view_box")
+                        if body_el:
+                            body_text = body_el.get_text("\n", strip=True)[:300]  # 본문 앞 300자
 
-                posts.append({
+                        # 댓글 추출
+                        if fetch_comments:
+                            comment_els = dsoup.select(".cmt_txtbox, .usertxt")
+                            for ci, cel in enumerate(comment_els):
+                                if ci >= max_comments_per_post:
+                                    break
+                                ctxt = cel.get_text(strip=True)
+                                if ctxt and len(ctxt) > 2:
+                                    comments.append(ctxt)
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+
+                # 본문 = 제목 + 본문내용
+                full_text = f"{title}\n\n{body_text}".strip() if body_text else title
+
+                results.append({
                     "source": "DC갤러리",
                     "type": "post",
-                    "text": title,
+                    "text": full_text,
                     "date": post_date.strftime("%Y-%m-%d"),
                     "upvotes": upvotes,
-                    "views": views,
                     "url": href,
                 })
+                post_count += 1
                 found_in_page += 1
 
-            except Exception as e:
+                # 댓글 추가
+                for ctxt in comments:
+                    results.append({
+                        "source": "DC갤러리",
+                        "type": "comment",
+                        "text": ctxt,
+                        "date": post_date.strftime("%Y-%m-%d"),
+                        "upvotes": 0,
+                        "url": href,
+                        "parent_title": title[:80],
+                    })
+                    comment_count += 1
+
+            except Exception:
                 continue
 
         print(f"[dc] page {page}: {found_in_page}건")
@@ -414,8 +434,8 @@ def crawl_dc(cfg):
             break
         time.sleep(0.8)
 
-    print(f"[dc] 총 {len(posts)}건 수집 완료")
-    return posts
+    print(f"[dc] 본문 {post_count}건 + 댓글 {comment_count}건 = 총 {len(results)}건 수집 완료")
+    return results
 
 
 def parse_dc_date(date_str):
