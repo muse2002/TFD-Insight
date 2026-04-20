@@ -39,45 +39,24 @@ DEFAULT_CONFIG = {
     "reddit": {
         "enabled": True,
         "subreddit": "TheFirstDescendant",
-        "sort": "new",           # new | hot | top
-        "time_filter": "week",   # hour | day | week | month | year | all (sort=top일 때만)
+        "sort": "new",
+        "time_filter": "week",
         "limit": 50,
+        "fetch_comments": True,
+        "max_comments_per_post": 10,
         "date_start": "2025-01-01",
         "date_end": "2099-12-31",
     },
     "dc": {
         "enabled": True,
-        "gallery_id": "first_descendant",   # DC 갤러리 id (실제 값으로 교체 필요)
+        "gallery_id": "first_descendant",
         "pages": 3,
         "date_start": "2025-01-01",
         "date_end": "2099-12-31",
     },
-    "categories": [
-        {
-            "name": "타워디펜스",
-            "keywords": [
-                {"value": "포탑", "aliases": ["turret", "터렛"]},
-                {"value": "바리케이트", "aliases": ["barricade", "바리케이드", "벽"]},
-                {"value": "웨이브", "aliases": ["wave"]},
-            ],
-        },
-        {
-            "name": "밸런스",
-            "keywords": [
-                {"value": "스킬", "aliases": ["skill", "ability"]},
-                {"value": "캐릭터", "aliases": ["character", "descendant", "계승자"]},
-            ],
-        },
-        {
-            "name": "신규컨텐츠",
-            "keywords": [
-                {"value": "던전", "aliases": ["dungeon", "레이드"]},
-                {"value": "보상", "aliases": ["reward", "drop", "loot", "드랍", "드롭"]},
-            ],
-        },
-    ],
+    "keywords": ["turret", "포탑", "barricade", "바리케이트", "onslaught", "격돌"],
     "output_path": "data.json",
-    "translate_english": True,  # 영어 게시글 한국어 자동 번역
+    "translate_english": True,
 }
 
 
@@ -92,6 +71,7 @@ def load_or_create_config(path="config.json"):
 
 # =====================================================
 # Reddit 크롤러 (공식 JSON API, 인증 불필요)
+# 본문(post) + 코멘트(comment) 분리 수집
 # =====================================================
 def crawl_reddit(cfg):
     if not cfg.get("enabled"):
@@ -99,7 +79,9 @@ def crawl_reddit(cfg):
     sub = cfg["subreddit"]
     sort = cfg.get("sort", "new")
     limit = cfg.get("limit", 50)
-    print(f"[reddit] r/{sub} {sort} {limit}건 수집 중...")
+    fetch_comments = cfg.get("fetch_comments", True)
+    max_comments_per_post = cfg.get("max_comments_per_post", 10)
+    print(f"[reddit] r/{sub} {sort} {limit}건 수집 중... (코멘트: {'ON' if fetch_comments else 'OFF'})")
 
     params = {"limit": limit, "raw_json": 1}
     if sort == "top":
@@ -115,9 +97,11 @@ def crawl_reddit(cfg):
         print(f"[reddit] 요청 실패: {e}")
         return []
 
-    posts = []
+    results = []
     date_start = datetime.fromisoformat(cfg["date_start"])
     date_end = datetime.fromisoformat(cfg["date_end"]) + timedelta(days=1)
+    post_count = 0
+    comment_count = 0
 
     for item in r.json().get("data", {}).get("children", []):
         d = item.get("data", {})
@@ -127,15 +111,54 @@ def crawl_reddit(cfg):
         title = d.get("title", "")
         body = d.get("selftext", "")
         text = f"{title}\n\n{body}".strip() if body else title
-        posts.append({
+        permalink = d.get("permalink", "")
+        post_url = "https://www.reddit.com" + permalink
+
+        results.append({
             "source": "Reddit",
+            "type": "post",
             "text": text,
             "date": created.strftime("%Y-%m-%d"),
             "upvotes": d.get("score", 0),
-            "url": "https://www.reddit.com" + d.get("permalink", ""),
+            "num_comments": d.get("num_comments", 0),
+            "url": post_url,
         })
-    print(f"[reddit] {len(posts)}건 수집 완료")
-    return posts
+        post_count += 1
+
+        # 코멘트 수집 — 게시글 URL.json으로 접근
+        if fetch_comments and permalink:
+            try:
+                comment_url = f"https://www.reddit.com{permalink}.json?limit={max_comments_per_post}&raw_json=1"
+                cr = requests.get(comment_url, headers=headers, timeout=15)
+                if cr.status_code == 200:
+                    cdata = cr.json()
+                    # Reddit JSON: [0]=게시글, [1]=코멘트 트리
+                    if isinstance(cdata, list) and len(cdata) > 1:
+                        comments_tree = cdata[1].get("data", {}).get("children", [])
+                        for cidx, c in enumerate(comments_tree):
+                            if cidx >= max_comments_per_post:
+                                break
+                            cd = c.get("data", {})
+                            cbody = cd.get("body", "")
+                            if not cbody or cd.get("author") in ("[deleted]", "AutoModerator"):
+                                continue
+                            c_created = datetime.fromtimestamp(cd.get("created_utc", 0))
+                            results.append({
+                                "source": "Reddit",
+                                "type": "comment",
+                                "text": cbody,
+                                "date": c_created.strftime("%Y-%m-%d"),
+                                "upvotes": cd.get("score", 0),
+                                "url": post_url,
+                                "parent_title": title[:80],
+                            })
+                            comment_count += 1
+                time.sleep(0.3)   # 과도한 요청 방지
+            except Exception as e:
+                print(f"[reddit] 코멘트 수집 실패: {e}")
+
+    print(f"[reddit] 본문 {post_count}건 + 코멘트 {comment_count}건 = 총 {len(results)}건 수집 완료")
+    return results
 
 
 # =====================================================
@@ -297,7 +320,8 @@ def crawl_dc(cfg):
 
                 posts.append({
                     "source": "DC갤러리",
-                    "text": title,          # 리스트에서는 제목만 수집 (본문 접근은 추가 요청 필요)
+                    "type": "post",
+                    "text": title,
                     "date": post_date.strftime("%Y-%m-%d"),
                     "upvotes": upvotes,
                     "views": views,
@@ -342,95 +366,36 @@ def parse_dc_date(date_str):
 
 
 # =====================================================
-# 키워드 매칭 (카테고리 그룹 기반 OR 매칭)
+# 키워드 매칭 (평면 리스트, OR 조건)
 # =====================================================
-def match_keyword(text_lower, value, aliases):
-    """단일 키워드가 텍스트에 매칭되는지 확인"""
-    patterns = [value.lower()] + [a.lower() for a in aliases]
-    return any(p in text_lower for p in patterns)
+def filter_by_keywords(posts, keywords):
+    """키워드 리스트 중 하나라도 게시글 텍스트에 포함되면 통과 (OR 매칭).
+    매칭된 키워드를 tags 배열에 저장.
 
+    Args:
+        posts: 게시글 리스트
+        keywords: 키워드 문자열 리스트 (예: ["turret", "포탑", "onslaught"])
 
-def classify_and_tag(posts, cfg):
-    """카테고리 구조 기반 분류:
-    - 각 게시글에서 활성화된 2차 키워드를 찾는다
-    - 첫 매칭 카테고리를 primary로 지정 (중복 방지)
-    - 같은 카테고리 내 모든 매칭 키워드를 tags에 저장
-
-    입력 cfg 형식:
-        {
-            "categories": [
-                {"name": "프로토스", "keywords": [{"value": "질럿", "aliases": [...]}, ...]},
-                ...
-            ]
-        }
-    구버전 호환: primary_keywords/secondary_keywords가 있으면 categories로 변환
+    Returns:
+        매칭된 게시글만 반환 (각 게시글에 tags 필드 추가)
     """
-    # 구버전 호환 처리 (primary_keywords + secondary_keywords → categories)
-    if "categories" not in cfg or not cfg["categories"]:
-        categories = _legacy_to_categories(cfg)
-    else:
-        categories = cfg["categories"]
-
-    if not categories:
-        return []
+    if not keywords:
+        # 키워드가 없으면 전체 통과 (필터 없음)
+        for p in posts:
+            p["tags"] = []
+        return posts
 
     result = []
+    kw_lower = [k.lower() for k in keywords]
+
     for p in posts:
         text_lower = p["text"].lower()
-
-        # 각 카테고리를 순회하며 매칭되는 첫 카테고리 찾기
-        matched_category = None
-        matched_tags = []
-
-        for cat in categories:
-            cat_name = cat["name"]
-            keywords = cat.get("keywords", [])
-
-            # 이 카테고리에서 매칭되는 모든 키워드 수집
-            tags_in_cat = []
-            for kw in keywords:
-                # kw가 문자열이면 {"value": kw, "aliases": []}로 처리
-                if isinstance(kw, str):
-                    value, aliases = kw, []
-                else:
-                    value = kw.get("value", "")
-                    aliases = kw.get("aliases", [])
-
-                if value and match_keyword(text_lower, value, aliases):
-                    tags_in_cat.append(value)
-
-            # 이 카테고리에서 매칭된 키워드가 있으면 이 카테고리로 확정
-            if tags_in_cat:
-                matched_category = cat_name
-                matched_tags = tags_in_cat
-                break   # 첫 매칭 카테고리만 사용 (중복 방지)
-
-        if matched_category is None:
-            continue   # 어떤 카테고리에도 매칭되지 않으면 드랍
-
-        p["primary"] = matched_category
-        p["tags"] = matched_tags
-        result.append(p)
+        matched = [kw for kw, kl in zip(keywords, kw_lower) if kl in text_lower]
+        if matched:
+            p["tags"] = matched
+            result.append(p)
 
     return result
-
-
-def _legacy_to_categories(cfg):
-    """구버전 flat 키워드 구조를 카테고리 구조로 변환 (백엔드 단독 실행 호환용)"""
-    primary_kws = cfg.get("primary_keywords", [])
-    secondary_kws = cfg.get("secondary_keywords", [])
-    secondary_aliases = cfg.get("secondary_aliases", {})
-
-    if not primary_kws or not secondary_kws:
-        return []
-
-    return [{
-        "name": primary_kws[0],
-        "keywords": [
-            {"value": kw, "aliases": secondary_aliases.get(kw, [])}
-            for kw in secondary_kws
-        ],
-    }]
 
 
 # =====================================================
@@ -535,12 +500,13 @@ def main():
         print("수집된 게시글이 없습니다. 설정을 확인해주세요.")
         return
 
-    # 키워드 필터 + 태깅
-    classified = classify_and_tag(all_posts, cfg)
+    # 키워드 필터 (OR 매칭)
+    keywords = cfg.get("keywords", [])
+    classified = filter_by_keywords(all_posts, keywords)
     print(f"키워드 매칭 후: {len(classified)}건")
 
     if not classified:
-        print("키워드 매칭 결과가 없습니다. primary/secondary 키워드 또는 aliases를 확인해주세요.")
+        print("키워드 매칭 결과가 없습니다. keywords 목록을 확인해주세요.")
         return
 
     # 감성 분석 (룰 기반)
