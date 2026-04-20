@@ -231,7 +231,7 @@ def summarize_post(text, api_key, max_chars=500):
     snippet = text[:max_chars]
     try:
         r = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={api_key}",
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={api_key}",
             json={
                 "contents": [{"parts": [{"text": f"다음 게임 커뮤니티 게시글을 한국어로 1줄(30자 이내)로 핵심만 요약해줘. 요약만 출력하고 다른 말은 하지 마.\n\n{snippet}"}]}],
                 "generationConfig": {"maxOutputTokens": 60, "temperature": 0.2},
@@ -362,6 +362,7 @@ def crawl_dc(cfg):
                 date_str = date_el.get("title", "") or date_el.get_text(strip=True) if date_el else ""
                 post_date = parse_dc_date(date_str)
                 if post_date is None:
+                    print(f"[dc] 날짜 파싱 실패: '{date_str}' → 오늘로 대체")
                     post_date = datetime.now().date()
                 if not (date_start <= post_date <= date_end):
                     continue
@@ -385,6 +386,8 @@ def crawl_dc(cfg):
                 })
                 post_count += 1
                 found_in_page += 1
+                if post_count <= 5:
+                    print(f"[dc] 샘플 #{post_count}: date_raw='{date_str}' → {post_date} | {title[:30]}")
 
             except Exception:
                 continue
