@@ -221,6 +221,76 @@ def translate_posts(posts):
     return posts
 
 
+# =====================================================
+# AI 요약 (Google Gemini 무료 API)
+# =====================================================
+def summarize_post(text, api_key, max_chars=500):
+    """단일 게시글을 한국어 1줄 요약. Gemini Flash 무료 티어 사용."""
+    if not text or not api_key:
+        return None
+    snippet = text[:max_chars]
+    try:
+        r = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={api_key}",
+            json={
+                "contents": [{"parts": [{"text": f"다음 게임 커뮤니티 게시글을 한국어로 1줄(30자 이내)로 핵심만 요약해줘. 요약만 출력하고 다른 말은 하지 마.\n\n{snippet}"}]}],
+                "generationConfig": {"maxOutputTokens": 60, "temperature": 0.2},
+            },
+            timeout=15,
+        )
+        if r.status_code != 200:
+            print(f"[summary] API 에러 {r.status_code}: {r.text[:100]}")
+            return None
+        data = r.json()
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts:
+                return parts[0].get("text", "").strip()
+        return None
+    except Exception as e:
+        print(f"[summary] 실패: {e}")
+        return None
+
+
+def summarize_posts(posts):
+    """게시글에 한국어 요약 추가 (summary 필드).
+    GEMINI_API_KEY 환경변수가 없으면 텍스트 앞부분 잘라내기로 대체."""
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+
+    if not api_key:
+        print("[summary] GEMINI_API_KEY 없음, 텍스트 잘라내기로 대체")
+        for p in posts:
+            # 한글 번역이 있으면 그걸 기반으로, 없으면 원문
+            base = p.get("text_ko") or p.get("text", "")
+            p["summary"] = base[:50].replace("\n", " ").strip() + ("..." if len(base) > 50 else "")
+        return posts
+
+    print(f"[summary] Gemini로 {len(posts)}건 요약 중...")
+    for i, p in enumerate(posts):
+        # 요약 대상 텍스트 결정 (한글 번역이 있으면 영+한 같이 전달)
+        text_for_summary = p.get("text", "")
+        if p.get("text_ko"):
+            text_for_summary = p["text_ko"]
+
+        summary = summarize_post(text_for_summary, api_key)
+        if summary:
+            p["summary"] = summary
+        else:
+            # 실패 시 텍스트 잘라내기
+            base = p.get("text_ko") or p.get("text", "")
+            p["summary"] = base[:50].replace("\n", " ").strip() + "..."
+
+        # rate limit 방지
+        if i < len(posts) - 1:
+            time.sleep(0.3)
+        if (i + 1) % 10 == 0:
+            print(f"[summary] {i+1}/{len(posts)} 완료")
+
+    print(f"[summary] 요약 완료")
+    return posts
+
+
 
 # =====================================================
 # DC갤러리 크롤러 (PC 버전, 마이너 갤러리 지원)
