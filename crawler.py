@@ -178,6 +178,7 @@ def translate_to_korean(text, max_chars=500):
             timeout=10,
         )
         if r.status_code != 200:
+            print(f"[translate] API 응답 {r.status_code}")
             return None
         data = r.json()
         translated = data.get("responseData", {}).get("translatedText", "")
@@ -281,9 +282,9 @@ def summarize_posts(posts):
             base = p.get("text_ko") or p.get("text", "")
             p["summary"] = base[:50].replace("\n", " ").strip() + "..."
 
-        # rate limit 방지
+        # rate limit 방지 (Gemini 무료 티어: 분당 15회 제한)
         if i < len(posts) - 1:
-            time.sleep(0.3)
+            time.sleep(2.0)
         if (i + 1) % 10 == 0:
             print(f"[summary] {i+1}/{len(posts)} 완료")
 
