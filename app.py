@@ -1,286 +1,546 @@
 """
-TFD Insight Crawler API (Render 배포용)
-=========================================
-Flask 서버 — 웹 버튼 클릭으로 크롤링 → JSON 반환
+TFD Insight Crawler
+====================
+Reddit + DC갤러리 게시글을 크롤링해서 룰 기반 감성 분석 후 JSON 출력.
 
-엔드포인트:
-    GET  /              — 헬스체크 (JSON 상태)
-    POST /crawl         — 크롤링 실행
-    GET  /crawl/status  — 최근 크롤링 상태 조회
+사용법:
+    1) 의존성 설치
+       pip install requests beautifulsoup4
 
-배포 가이드는 README.md 참고.
+    2) config.json 편집 후 실행
+       python crawler.py
+
+    3) 생성된 data.json을 TFD Insight HTML의 Upload JSON 버튼에 올리기
 """
 
-import os
 import json
 import time
-import threading
-from datetime import datetime
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+import re
+import os
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from urllib.parse import urlencode
 
-from crawler import (
-    crawl_reddit,
-    crawl_dc,
-    classify_and_tag,
-    sentiment_batch,
-    translate_posts,
-    extract_keywords_from_posts,
-    DEFAULT_CONFIG,
-)
+try:
+    import requests
+    from bs4 import BeautifulSoup
+except ImportError:
+    print("필수 패키지를 설치해주세요: pip install requests beautifulsoup4")
+    sys.exit(1)
 
-app = Flask(__name__)
-CORS(app)   # 모든 origin 허용 (GitHub Pages 등 어디서든 호출 가능)
 
-# 서버 상태 (메모리 저장, 재시작 시 초기화)
-STATE = {
-    "status": "idle",       # idle | crawling | analyzing | done | error
-    "message": "",
-    "progress": 0,          # 0 ~ 100
-    "last_run": None,
-    "last_result": None,    # 마지막 크롤링 결과 (JSON)
-    "error": None,
+
+
+# =====================================================
+# 설정 파일 관리
+# =====================================================
+DEFAULT_CONFIG = {
+    "reddit": {
+        "enabled": True,
+        "subreddit": "TheFirstDescendant",
+        "sort": "new",
+        "time_filter": "week",
+        "limit": 50,
+        "fetch_comments": True,
+        "max_comments_per_post": 10,
+        "date_start": "2025-01-01",
+        "date_end": "2099-12-31",
+    },
+    "dc": {
+        "enabled": True,
+        "gallery_id": "first_descendant",
+        "pages": 3,
+        "date_start": "2025-01-01",
+        "date_end": "2099-12-31",
+    },
+    "keywords": ["turret", "포탑", "barricade", "바리케이트", "onslaught", "격돌"],
+    "output_path": "data.json",
+    "translate_english": True,
 }
-STATE_LOCK = threading.Lock()
 
 
-def update_state(**kwargs):
-    with STATE_LOCK:
-        STATE.update(kwargs)
+def load_or_create_config(path="config.json"):
+    p = Path(path)
+    if not p.exists():
+        p.write_text(json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[config] {path} 파일을 생성했습니다. 편집 후 다시 실행하세요.")
+        sys.exit(0)
+    return json.loads(p.read_text(encoding="utf-8"))
 
 
-@app.route("/")
-def health():
-    return jsonify({
-        "service": "TFD Insight Crawler",
-        "version": "1.0",
-        "status": "ok",
-        "endpoints": {
-            "crawl": "POST /crawl",
-            "status": "GET /crawl/status",
-        },
+# =====================================================
+# Reddit 크롤러 (공식 JSON API, 인증 불필요)
+# 본문(post) + 코멘트(comment) 분리 수집
+# =====================================================
+def crawl_reddit(cfg):
+    if not cfg.get("enabled"):
+        return []
+    sub = cfg["subreddit"]
+    sort = cfg.get("sort", "new")
+    limit = cfg.get("limit", 50)
+    fetch_comments = cfg.get("fetch_comments", True)
+    max_comments_per_post = cfg.get("max_comments_per_post", 10)
+    print(f"[reddit] r/{sub} {sort} {limit}건 수집 중... (코멘트: {'ON' if fetch_comments else 'OFF'})")
+
+    params = {"limit": limit, "raw_json": 1}
+    if sort == "top":
+        params["t"] = cfg.get("time_filter", "week")
+
+    url = f"https://www.reddit.com/r/{sub}/{sort}.json?{urlencode(params)}"
+    headers = {"User-Agent": "tfd-insight-crawler/1.0"}
+
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"[reddit] 요청 실패: {e}")
+        return []
+
+    results = []
+    date_start = datetime.fromisoformat(cfg["date_start"])
+    date_end = datetime.fromisoformat(cfg["date_end"]) + timedelta(days=1)
+    post_count = 0
+    comment_count = 0
+
+    for item in r.json().get("data", {}).get("children", []):
+        d = item.get("data", {})
+        created = datetime.fromtimestamp(d.get("created_utc", 0))
+        if not (date_start <= created < date_end):
+            continue
+        title = d.get("title", "")
+        body = d.get("selftext", "")
+        text = f"{title}\n\n{body}".strip() if body else title
+        permalink = d.get("permalink", "")
+        post_url = "https://www.reddit.com" + permalink
+
+        results.append({
+            "source": "Reddit",
+            "type": "post",
+            "text": text,
+            "date": created.strftime("%Y-%m-%d"),
+            "upvotes": d.get("score", 0),
+            "num_comments": d.get("num_comments", 0),
+            "url": post_url,
+        })
+        post_count += 1
+
+        # 코멘트 수집 — 게시글 URL.json으로 접근
+        if fetch_comments and permalink:
+            try:
+                comment_url = f"https://www.reddit.com{permalink}.json?limit={max_comments_per_post}&raw_json=1"
+                cr = requests.get(comment_url, headers=headers, timeout=15)
+                if cr.status_code == 200:
+                    cdata = cr.json()
+                    # Reddit JSON: [0]=게시글, [1]=코멘트 트리
+                    if isinstance(cdata, list) and len(cdata) > 1:
+                        comments_tree = cdata[1].get("data", {}).get("children", [])
+                        for cidx, c in enumerate(comments_tree):
+                            if cidx >= max_comments_per_post:
+                                break
+                            cd = c.get("data", {})
+                            cbody = cd.get("body", "")
+                            if not cbody or cd.get("author") in ("[deleted]", "AutoModerator"):
+                                continue
+                            c_created = datetime.fromtimestamp(cd.get("created_utc", 0))
+                            results.append({
+                                "source": "Reddit",
+                                "type": "comment",
+                                "text": cbody,
+                                "date": c_created.strftime("%Y-%m-%d"),
+                                "upvotes": cd.get("score", 0),
+                                "url": post_url,
+                                "parent_title": title[:80],
+                            })
+                            comment_count += 1
+                time.sleep(0.3)   # 과도한 요청 방지
+            except Exception as e:
+                print(f"[reddit] 코멘트 수집 실패: {e}")
+
+    print(f"[reddit] 본문 {post_count}건 + 코멘트 {comment_count}건 = 총 {len(results)}건 수집 완료")
+    return results
+
+
+# =====================================================
+# 번역 (MyMemory 무료 API, 키 불필요)
+# =====================================================
+def translate_to_korean(text, max_chars=500):
+    """영어 텍스트를 한국어로 번역. MyMemory 무료 API 사용.
+    실패 시 None 반환. 긴 텍스트는 max_chars로 잘라서 번역."""
+    if not text or not text.strip():
+        return None
+    # 너무 긴 텍스트는 잘라서 번역 (API limit 500자)
+    snippet = text[:max_chars]
+    try:
+        r = requests.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": snippet, "langpair": "en|ko"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        translated = data.get("responseData", {}).get("translatedText", "")
+        # API가 에러 메시지를 번역문으로 반환하는 경우 필터
+        if "MYMEMORY WARNING" in translated.upper() or "INVALID" in translated.upper():
+            return None
+        return translated.strip() or None
+    except Exception as e:
+        print(f"[translate] 실패: {e}")
+        return None
+
+
+def is_mostly_english(text):
+    """텍스트가 주로 영어인지 간이 판정 (한글 비율이 10% 미만이면 영어로 간주)"""
+    if not text:
+        return False
+    korean_chars = sum(1 for c in text if '\uac00' <= c <= '\ud7a3')
+    total_chars = sum(1 for c in text if c.isalpha())
+    if total_chars == 0:
+        return False
+    return (korean_chars / total_chars) < 0.1
+
+
+def translate_posts(posts):
+    """영어 게시글에 한국어 번역 추가 (text_ko 필드)"""
+    english_posts = [p for p in posts if is_mostly_english(p.get("text", ""))]
+    if not english_posts:
+        return posts
+
+    print(f"[translate] 영어 게시글 {len(english_posts)}건 번역 중...")
+    for i, p in enumerate(english_posts):
+        translated = translate_to_korean(p["text"])
+        if translated:
+            p["text_ko"] = translated
+        # API rate limit 방지 (초당 1회)
+        if i < len(english_posts) - 1:
+            time.sleep(0.6)
+        if (i + 1) % 10 == 0:
+            print(f"[translate] {i+1}/{len(english_posts)} 완료")
+    print(f"[translate] 번역 완료")
+    return posts
+
+
+
+# =====================================================
+# DC갤러리 크롤러 (PC 버전, 마이너 갤러리 지원)
+# =====================================================
+def crawl_dc(cfg):
+    if not cfg.get("enabled"):
+        return []
+    gall_id = cfg["gallery_id"]
+    pages = cfg.get("pages", 3)
+    print(f"[dc] {gall_id} {pages}페이지 수집 중...")
+
+    posts = []
+    date_start = datetime.fromisoformat(cfg["date_start"]).date()
+    date_end = datetime.fromisoformat(cfg["date_end"]).date()
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://gall.dcinside.com/",
     })
 
+    for page in range(1, pages + 1):
+        # PC 버전 마이너 갤러리 URL
+        list_url = f"https://gall.dcinside.com/mgallery/board/lists/?id={gall_id}&page={page}"
+        try:
+            r = session.get(list_url, timeout=15)
+            if r.status_code != 200:
+                print(f"[dc] page {page} 응답 {r.status_code}, 중단")
+                break
+        except Exception as e:
+            print(f"[dc] page {page} 요청 실패: {e}")
+            break
 
-@app.route("/crawl/status")
-def crawl_status():
-    with STATE_LOCK:
-        return jsonify({
-            "status": STATE["status"],
-            "message": STATE["message"],
-            "progress": STATE["progress"],
-            "last_run": STATE["last_run"],
-            "count": len(STATE["last_result"]) if STATE["last_result"] else 0,
-            "error": STATE["error"],
-        })
+        soup = BeautifulSoup(r.text, "html.parser")
 
+        # 게시글 목록: <tr class="ub-content us-post"> 안의 각 행
+        rows = soup.select("tr.ub-content.us-post")
+        if not rows:
+            print(f"[dc] page {page}: 게시글 행 없음 (셀렉터 불일치 가능)")
+            break
 
-@app.route("/crawl", methods=["POST", "OPTIONS"])
-def crawl():
-    if request.method == "OPTIONS":
-        return "", 204
+        found_in_page = 0
+        for row in rows:
+            try:
+                # 글 유형 (공지/설문/AD 등은 건너뛰기)
+                subject_el = row.select_one("td.gall_subject")
+                if subject_el:
+                    subject_text = subject_el.get_text(strip=True)
+                    if subject_text in ("공지", "설문", "AD"):
+                        continue
 
-    # 이미 크롤링 중이면 거부
-    with STATE_LOCK:
-        if STATE["status"] in ("crawling", "analyzing"):
-            return jsonify({"error": "이미 크롤링이 진행 중입니다", "status": STATE["status"]}), 409
+                # 제목 추출
+                title_el = row.select_one("td.gall_tit a")
+                if not title_el:
+                    continue
+                title = title_el.get_text(strip=True)
+                if not title:
+                    continue
 
-    # 요청 body에서 설정 받기 (기본값: DEFAULT_CONFIG)
-    try:
-        body = request.get_json() or {}
-    except Exception:
-        body = {}
+                # URL 추출
+                href = title_el.get("href", "")
+                if not href.startswith("http"):
+                    href = "https://gall.dcinside.com" + href
 
-    # 설정 병합
-    cfg = {**DEFAULT_CONFIG}
-    if "reddit" in body:
-        reddit_cfg = {**cfg["reddit"], **body["reddit"]}
-        if "start" in reddit_cfg and "date_start" not in reddit_cfg:
-            reddit_cfg["date_start"] = reddit_cfg.pop("start")
-        if "end" in reddit_cfg and "date_end" not in reddit_cfg:
-            reddit_cfg["date_end"] = reddit_cfg.pop("end")
-        cfg["reddit"] = reddit_cfg
-    if "dc" in body:
-        dc_cfg = {**cfg["dc"], **body["dc"]}
-        if "start" in dc_cfg and "date_start" not in dc_cfg:
-            dc_cfg["date_start"] = dc_cfg.pop("start")
-        if "end" in dc_cfg and "date_end" not in dc_cfg:
-            dc_cfg["date_end"] = dc_cfg.pop("end")
-        cfg["dc"] = dc_cfg
+                # 글 번호 (게시글 고유 번호)
+                num_el = row.select_one("td.gall_num")
+                post_num = num_el.get_text(strip=True) if num_el else ""
 
-    # 새 구조: categories (우선 적용)
-    if "categories" in body and isinstance(body["categories"], list):
-        # 프론트에서 온 카테고리 구조를 crawler 형식으로 변환
-        # 프론트 형식: {name, keywords: ["질럿", "드라군"]}  (문자열 배열)
-        # crawler 형식: {name, keywords: [{value, aliases}]}
-        cfg["categories"] = [
-            {
-                "name": cat.get("name", ""),
-                "keywords": [
-                    {"value": kw, "aliases": []} if isinstance(kw, str) else kw
-                    for kw in cat.get("keywords", [])
-                ],
-            }
-            for cat in body["categories"]
-            if cat.get("name")
-        ]
-    # 구 구조 호환 (categories가 없을 때만)
-    elif "primary_keywords" in body or "secondary_keywords" in body:
-        if "primary_keywords" in body:
-            cfg["primary_keywords"] = body["primary_keywords"]
-        if "secondary_keywords" in body:
-            cfg["secondary_keywords"] = body["secondary_keywords"]
-        if "primary_aliases" in body:
-            cfg["primary_aliases"] = {**cfg.get("primary_aliases", {}), **body["primary_aliases"]}
-        if "secondary_aliases" in body:
-            cfg["secondary_aliases"] = {**cfg.get("secondary_aliases", {}), **body["secondary_aliases"]}
-        cfg.pop("categories", None)   # 구 구조일 때 새 필드 제거 (classify_and_tag가 legacy 변환)
+                # 날짜 추출
+                date_el = row.select_one("td.gall_date")
+                date_str = date_el.get("title", "") or date_el.get_text(strip=True) if date_el else ""
+                post_date = parse_dc_date(date_str)
 
-    # 번역 설정
-    if "translate_english" in body:
-        cfg["translate_english"] = bool(body["translate_english"])
+                # 날짜 필터링 (날짜 파싱 실패하면 오늘 날짜로 대체)
+                if post_date is None:
+                    post_date = datetime.now().date()
+                if not (date_start <= post_date <= date_end):
+                    continue
 
-    # 동기 실행 (Render Free는 타임아웃이 길지 않으므로 빠르게 처리)
-    try:
-        update_state(status="crawling", message="Reddit 수집 중...", progress=10, error=None)
+                # 추천수
+                rec_el = row.select_one("td.gall_recommend")
+                upvotes = 0
+                if rec_el:
+                    try:
+                        upvotes = int(rec_el.get_text(strip=True) or 0)
+                    except ValueError:
+                        upvotes = 0
 
-        all_posts = []
-        if cfg["reddit"].get("enabled", True):
-            all_posts.extend(crawl_reddit(cfg["reddit"]))
+                # 조회수
+                count_el = row.select_one("td.gall_count")
+                views = 0
+                if count_el:
+                    try:
+                        views = int(count_el.get_text(strip=True) or 0)
+                    except ValueError:
+                        views = 0
 
-        update_state(message="DC갤러리 수집 중...", progress=35)
-        if cfg["dc"].get("enabled", True):
-            all_posts.extend(crawl_dc(cfg["dc"]))
+                posts.append({
+                    "source": "DC갤러리",
+                    "type": "post",
+                    "text": title,
+                    "date": post_date.strftime("%Y-%m-%d"),
+                    "upvotes": upvotes,
+                    "views": views,
+                    "url": href,
+                })
+                found_in_page += 1
 
-        update_state(message=f"키워드 매칭 중... ({len(all_posts)}건)", progress=55)
-        classified = classify_and_tag(all_posts, cfg)
+            except Exception as e:
+                continue
 
-        if not classified:
-            update_state(
-                status="error",
-                message="키워드 매칭된 게시글이 없습니다",
-                progress=100,
-                last_run=datetime.utcnow().isoformat(),
-                error="matched_zero",
-            )
-            return jsonify({"error": "키워드 매칭된 게시글이 없습니다", "collected": len(all_posts), "items": []}), 200
+        print(f"[dc] page {page}: {found_in_page}건")
+        if found_in_page == 0 and page > 1:
+            break
+        time.sleep(0.8)
 
-        update_state(status="analyzing", message=f"감성분석 중... ({len(classified)}건)", progress=70)
-        sentiments = sentiment_batch(classified, cfg)
-        for p, s in zip(classified, sentiments):
-            p["sentiment"] = s if s in ("긍정", "부정", "개선") else "개선"
-
-        # 영어 게시글 번역 (Reddit)
-        if cfg.get("translate_english", True):
-            update_state(message="영어 게시글 번역 중...", progress=85)
-            translate_posts(classified)
-
-        for i, p in enumerate(classified):
-            p["id"] = i + 1
-
-        update_state(
-            status="done",
-            message=f"완료: {len(classified)}건",
-            progress=100,
-            last_run=datetime.utcnow().isoformat(),
-            last_result=classified,
-            error=None,
-        )
-
-        return jsonify({
-            "ok": True,
-            "count": len(classified),
-            "items": classified,
-            "stats": {
-                "collected_total": len(all_posts),
-                "after_keyword_match": len(classified),
-                "reddit": sum(1 for p in classified if p["source"] == "Reddit"),
-                "dc": sum(1 for p in classified if p["source"] == "DC갤러리"),
-                "positive": sum(1 for p in classified if p["sentiment"] == "긍정"),
-                "negative": sum(1 for p in classified if p["sentiment"] == "부정"),
-                "improvement": sum(1 for p in classified if p["sentiment"] == "개선"),
-            },
-            "run_at": datetime.utcnow().isoformat(),
-        })
-
-    except Exception as e:
-        err_msg = str(e)
-        update_state(
-            status="error",
-            message=f"에러: {err_msg}",
-            progress=0,
-            last_run=datetime.utcnow().isoformat(),
-            error=err_msg,
-        )
-        return jsonify({"error": err_msg}), 500
+    print(f"[dc] 총 {len(posts)}건 수집 완료")
+    return posts
 
 
-@app.route("/discover", methods=["POST", "OPTIONS"])
-def discover():
-    """키워드 발견 API:
-    Reddit/DC갤러리에서 게시글을 수집한 뒤, 자주 등장하는 단어를 빈도순으로 반환.
-    시드 키워드 없이 전체 게시글에서 추출.
+def parse_dc_date(date_str):
+    """DC갤러리 날짜 포맷 다수 처리"""
+    if not date_str:
+        return None
+    s = date_str.strip()
+    now = datetime.now().date()
+
+    # "HH:MM" → 오늘
+    if re.match(r"^\d{2}:\d{2}$", s):
+        return now
+
+    # "MM.DD" → 올해
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})$", s)
+    if m:
+        return datetime(now.year, int(m.group(1)), int(m.group(2))).date()
+
+    # "YYYY.MM.DD" 또는 "YYYY-MM-DD"
+    m = re.match(r"^(\d{4})[.\-](\d{1,2})[.\-](\d{1,2})", s)
+    if m:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+
+    return None
+
+
+# =====================================================
+# 키워드 매칭 (평면 리스트, OR 조건)
+# =====================================================
+def filter_by_keywords(posts, keywords):
+    """키워드 리스트 중 하나라도 게시글 텍스트에 포함되면 통과 (OR 매칭).
+    매칭된 키워드를 tags 배열에 저장.
+
+    Args:
+        posts: 게시글 리스트
+        keywords: 키워드 문자열 리스트 (예: ["turret", "포탑", "onslaught"])
+
+    Returns:
+        매칭된 게시글만 반환 (각 게시글에 tags 필드 추가)
     """
-    if request.method == "OPTIONS":
-        return "", 204
+    if not keywords:
+        # 키워드가 없으면 전체 통과 (필터 없음)
+        for p in posts:
+            p["tags"] = []
+        return posts
 
-    try:
-        body = request.get_json() or {}
-    except Exception:
-        body = {}
+    result = []
+    kw_lower = [k.lower() for k in keywords]
 
-    cfg = {**DEFAULT_CONFIG}
-    if "reddit" in body:
-        reddit_cfg = {**cfg["reddit"], **body["reddit"]}
-        if "start" in reddit_cfg and "date_start" not in reddit_cfg:
-            reddit_cfg["date_start"] = reddit_cfg.pop("start")
-        if "end" in reddit_cfg and "date_end" not in reddit_cfg:
-            reddit_cfg["date_end"] = reddit_cfg.pop("end")
-        cfg["reddit"] = reddit_cfg
-    if "dc" in body:
-        dc_cfg = {**cfg["dc"], **body["dc"]}
-        if "start" in dc_cfg and "date_start" not in dc_cfg:
-            dc_cfg["date_start"] = dc_cfg.pop("start")
-        if "end" in dc_cfg and "date_end" not in dc_cfg:
-            dc_cfg["date_end"] = dc_cfg.pop("end")
-        cfg["dc"] = dc_cfg
+    for p in posts:
+        text_lower = p["text"].lower()
+        matched = [kw for kw, kl in zip(keywords, kw_lower) if kl in text_lower]
+        if matched:
+            p["tags"] = matched
+            result.append(p)
 
-    top_n = body.get("top_n", 40)
-    # 결과에서 제외할 단어 (이미 알고 있는 키워드)
-    exclude_words = body.get("exclude_words", [])
+    return result
 
-    try:
-        update_state(status="crawling", message="키워드 발견: 게시글 수집 중...", progress=20, error=None)
 
-        all_posts = []
-        if cfg["reddit"].get("enabled", True):
-            all_posts.extend(crawl_reddit(cfg["reddit"]))
-        if cfg["dc"].get("enabled", True):
-            all_posts.extend(crawl_dc(cfg["dc"]))
+# =====================================================
+# 키워드 발견 (게시글에서 자주 나온 단어 추출)
+# =====================================================
 
-        print(f"[discover] 총 수집: {len(all_posts)}건")
+STOPWORDS_KO = set("이 가 은 는 을 를 의 에 에서 으로 로 와 과 도 만 까지 부터 보다 처럼 같이 것 수 등 중 때 위 후 뒤 더 또 및 그 저 이런 저런 그런 합니다 한다 하다 있다 없다 되다 않다 이다 해서 하고 해요 입니다 ㅋㅋ ㅎㅎ ㅋㅋㅋ ㅎㅎㅎ ㅋㅋㅋㅋ ㅠㅠ ㅜㅜ ㄹㅇ ㅇㅇ ㄴㄴ ㅡㅡ 진짜 좀 너무 많이 다 안 못 왜 뭐 걍 근데 아 오 음 게임 하는 같은 있는 없는 되는 하는 해야 에서".split())
+STOPWORDS_EN = set("the a an is are was were be been being have has had do does did will would shall should may might can could i me my we our you your he she it they them their its this that these those am not no nor so if or but and to of in for on at by from with as about into through during before after above below between out up down off over under again further then once here there when where why how all each every both few more most other some such only own same than too very just game games like really think make need want get got going been much also even still".split())
 
-        if not all_posts:
-            update_state(status="done", message="수집된 게시글 없음", progress=100)
-            return jsonify({"error": "수집된 게시글이 없습니다", "keywords": [], "post_count": 0}), 200
 
-        update_state(message=f"키워드 추출 중... ({len(all_posts)}건)", progress=70)
-        discovered = extract_keywords_from_posts(all_posts, seed_keywords=exclude_words, top_n=top_n)
+def extract_keywords_from_posts(posts, seed_keywords=None, top_n=40, min_length=2):
+    """게시글에서 자주 등장하는 키워드를 빈도순으로 추출.
 
-        update_state(status="done", message=f"키워드 {len(discovered)}개 발견", progress=100)
+    Args:
+        posts: 게시글 리스트 [{text, source, ...}, ...]
+        seed_keywords: 시드(씨앗) 키워드 — 결과에서 제외 (이미 알고 있는 단어)
+        top_n: 반환할 키워드 수
+        min_length: 최소 글자 수
 
-        return jsonify({
-            "ok": True,
-            "keywords": discovered,
-            "post_count": len(all_posts),
-        })
+    Returns:
+        [{"word": "포탑", "count": 47, "sources": {"Reddit": 30, "DC갤러리": 17}}, ...]
+    """
+    seed_set = set(w.lower() for w in (seed_keywords or []))
+    word_data = {}
 
-    except Exception as e:
-        err_msg = str(e)
-        update_state(status="error", message=f"에러: {err_msg}", progress=0, error=err_msg)
-        return jsonify({"error": err_msg}), 500
+    for post in posts:
+        text = post.get("text", "")
+        source = post.get("source", "unknown")
+
+        # 한글 2글자 이상 또는 영문 2글자 이상인 단어만 추출
+        words_raw = re.findall(r'[가-힣]{2,}|[a-zA-Z]{2,}', text)
+
+        # 한 게시글에서 같은 단어 여러 번 나와도 1회로 카운트
+        seen_in_post = set()
+        for w in words_raw:
+            w_lower = w.lower()
+            if len(w) < min_length:
+                continue
+            if w_lower in STOPWORDS_KO or w_lower in STOPWORDS_EN:
+                continue
+            if w_lower in seed_set:
+                continue
+            if w_lower in seen_in_post:
+                continue
+            seen_in_post.add(w_lower)
+
+            if w_lower not in word_data:
+                word_data[w_lower] = {"word": w, "count": 0, "sources": {}}
+            word_data[w_lower]["count"] += 1
+            word_data[w_lower]["sources"][source] = word_data[w_lower]["sources"].get(source, 0) + 1
+
+    sorted_words = sorted(word_data.values(), key=lambda x: x["count"], reverse=True)
+    return sorted_words[:top_n]
+
+
+# =====================================================
+# 룰 기반 감성분석 (한/영 감성 단어 사전)
+# =====================================================
+RULE_POS = ["좋다", "좋네", "좋음", "굿", "재밌", "최고", "만족", "감사", "잘만", "멋짐", "good", "great", "love", "amazing", "awesome", "best", "nice", "fun"]
+RULE_NEG = ["별로", "싫다", "싫어", "쓰레기", "망함", "노잼", "화남", "짜증", "답없", "ㅡㅡ", "bad", "awful", "terrible", "worst", "useless", "broken", "nerf", "너프"]
+RULE_IMP = ["했으면", "필요", "요청", "제안", "개선", "바람", "바랍", "원함", "원해", "부탁", "need", "should", "could", "suggest", "request", "improve", "would love", "wish"]
+
+
+def sentiment_rule(text):
+    t = text.lower()
+    pos = sum(1 for w in RULE_POS if w in t)
+    neg = sum(1 for w in RULE_NEG if w in t)
+    imp = sum(1 for w in RULE_IMP if w in t)
+    if imp > max(pos, neg) or (imp >= 1 and "?" in text):
+        return "개선"
+    if neg > pos:
+        return "부정"
+    if pos > 0:
+        return "긍정"
+    return "개선" if imp else "긍정"
+
+
+def sentiment_batch(posts, cfg=None):
+    """게시글 리스트에 대해 감성 분류 (룰 기반)"""
+    return [sentiment_rule(p["text"]) for p in posts]
+
+
+# =====================================================
+# 메인 파이프라인
+# =====================================================
+def main():
+    cfg = load_or_create_config()
+    print("=" * 60)
+    print(f"TFD Insight Crawler")
+    print(f"기간: Reddit {cfg['reddit']['date_start']} ~ {cfg['reddit']['date_end']}")
+    print(f"       DC    {cfg['dc']['date_start']} ~ {cfg['dc']['date_end']}")
+    print(f"1차: {cfg['primary_keywords']}")
+    print(f"2차: {cfg['secondary_keywords']}")
+    print("=" * 60)
+
+    all_posts = []
+    all_posts.extend(crawl_reddit(cfg["reddit"]))
+    all_posts.extend(crawl_dc(cfg["dc"]))
+    print(f"\n총 수집: {len(all_posts)}건")
+
+    if not all_posts:
+        print("수집된 게시글이 없습니다. 설정을 확인해주세요.")
+        return
+
+    # 키워드 필터 (OR 매칭)
+    keywords = cfg.get("keywords", [])
+    classified = filter_by_keywords(all_posts, keywords)
+    print(f"키워드 매칭 후: {len(classified)}건")
+
+    if not classified:
+        print("키워드 매칭 결과가 없습니다. keywords 목록을 확인해주세요.")
+        return
+
+    # 감성 분석 (룰 기반)
+    print(f"\n감성 분석 시작 (룰 기반)...")
+    sentiments = sentiment_batch(classified, cfg)
+    for p, s in zip(classified, sentiments):
+        p["sentiment"] = s if s in ("긍정", "부정", "개선") else "개선"
+
+    # 영어 게시글 번역 (Reddit → 한글)
+    if cfg.get("translate_english", True):
+        translate_posts(classified)
+
+    # id 부여
+    for i, p in enumerate(classified):
+        p["id"] = i + 1
+
+    # 저장
+    out_path = cfg.get("output_path", "data.json")
+    Path(out_path).write_text(
+        json.dumps(classified, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    # 통계
+    sent_count = {s: sum(1 for p in classified if p["sentiment"] == s) for s in ("긍정", "부정", "개선")}
+    src_count = {s: sum(1 for p in classified if p["source"] == s) for s in ("Reddit", "DC갤러리")}
+
+    print("\n" + "=" * 60)
+    print(f"저장 완료: {out_path} ({len(classified)}건)")
+    print(f"소스: Reddit {src_count['Reddit']}건 · DC갤러리 {src_count['DC갤러리']}건")
+    print(f"감성: 긍정 {sent_count['긍정']}건 · 부정 {sent_count['부정']}건 · 개선 {sent_count['개선']}건")
+    print(f"\n다음: TFD Insight HTML 열어서 'Upload JSON' 버튼으로 {out_path} 업로드")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    main()
