@@ -22,6 +22,7 @@ from flask_cors import CORS
 from crawler import (
     crawl_reddit,
     crawl_dc,
+    fetch_dc_details,
     filter_by_keywords,
     sentiment_batch,
     translate_posts,
@@ -292,6 +293,26 @@ def summarize():
     summarize_posts(items)
 
     return jsonify({"ok": True, "items": items, "count": len(items)})
+
+
+@app.route("/dc-detail", methods=["POST", "OPTIONS"])
+def dc_detail():
+    """DC갤러리 상세 페이지 본문+댓글 수집. URL 배열을 받아서 처리."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        body = request.get_json() or {}
+    except Exception:
+        body = {}
+
+    urls = body.get("urls", [])
+    if not urls:
+        return jsonify({"error": "urls가 필요합니다"}), 400
+
+    print(f"[dc-detail] {len(urls)}건 상세 수집 요청")
+    details = fetch_dc_details(urls)
+
+    return jsonify({"ok": True, "details": details, "count": len(details)})
 
 
 @app.route("/report", methods=["POST", "OPTIONS"])
