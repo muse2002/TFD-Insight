@@ -203,19 +203,18 @@ def is_mostly_english(text):
 
 
 def translate_posts(posts):
-    """영어 게시글에 한국어 번역 추가 (text_ko 필드)"""
-    english_posts = [p for p in posts if is_mostly_english(p.get("text", ""))]
+    """영어 게시글 중 본문(post)만 번역 (코멘트는 스킵 — 시간 절약)"""
+    english_posts = [p for p in posts if is_mostly_english(p.get("text", "")) and p.get("type") == "post"]
     if not english_posts:
         return posts
 
-    print(f"[translate] 영어 게시글 {len(english_posts)}건 번역 중...")
+    print(f"[translate] 영어 본문 {len(english_posts)}건 번역 중...")
     for i, p in enumerate(english_posts):
         translated = translate_to_korean(p["text"])
         if translated:
             p["text_ko"] = translated
-        # API rate limit 방지 (초당 1회)
         if i < len(english_posts) - 1:
-            time.sleep(0.6)
+            time.sleep(1.5)
         if (i + 1) % 10 == 0:
             print(f"[translate] {i+1}/{len(english_posts)} 완료")
     print(f"[translate] 번역 완료")
@@ -255,38 +254,45 @@ def summarize_post(text, api_key, max_chars=500):
 
 
 def summarize_posts(posts):
-    """게시글에 한국어 요약 추가 (summary 필드).
-    GEMINI_API_KEY 환경변수가 없으면 텍스트 앞부분 잘라내기로 대체."""
+    """게시글 중 본문(post)만 AI 요약. 코멘트는 스킵 (시간 절약).
+    GEMINI_API_KEY 없으면 텍스트 잘라내기로 대체.
+    429 에러 발생 시 즉시 중단하고 나머지는 잘라내기로 대체."""
     api_key = os.environ.get("GEMINI_API_KEY", "")
+
+    # 요약 대상: 본문만
+    target_posts = [p for p in posts if p.get("type") == "post"]
 
     if not api_key:
         print("[summary] GEMINI_API_KEY 없음, 텍스트 잘라내기로 대체")
-        for p in posts:
-            # 한글 번역이 있으면 그걸 기반으로, 없으면 원문
+        for p in target_posts:
             base = p.get("text_ko") or p.get("text", "")
             p["summary"] = base[:50].replace("\n", " ").strip() + ("..." if len(base) > 50 else "")
         return posts
 
-    print(f"[summary] Gemini로 {len(posts)}건 요약 중...")
-    for i, p in enumerate(posts):
-        # 요약 대상 텍스트 결정 (한글 번역이 있으면 영+한 같이 전달)
-        text_for_summary = p.get("text", "")
-        if p.get("text_ko"):
-            text_for_summary = p["text_ko"]
+    print(f"[summary] Gemini로 본문 {len(target_posts)}건 요약 중...")
+    rate_limited = False
+    for i, p in enumerate(target_posts):
+        if rate_limited:
+            # 429 이후는 잘라내기로 대체
+            base = p.get("text_ko") or p.get("text", "")
+            p["summary"] = base[:50].replace("\n", " ").strip() + "..."
+            continue
 
+        text_for_summary = p.get("text_ko") or p.get("text", "")
         summary = summarize_post(text_for_summary, api_key)
         if summary:
             p["summary"] = summary
         else:
-            # 실패 시 텍스트 잘라내기
+            # 429 감지 — 나머지 전부 잘라내기로 전환
             base = p.get("text_ko") or p.get("text", "")
             p["summary"] = base[:50].replace("\n", " ").strip() + "..."
+            rate_limited = True
+            print(f"[summary] Rate limit 감지, 나머지 {len(target_posts)-i-1}건은 텍스트 잘라내기로 대체")
 
-        # rate limit 방지 (Gemini 무료 티어: 분당 15회 제한)
-        if i < len(posts) - 1:
-            time.sleep(2.0)
-        if (i + 1) % 10 == 0:
-            print(f"[summary] {i+1}/{len(posts)} 완료")
+        if i < len(target_posts) - 1 and not rate_limited:
+            time.sleep(4.0)
+        if (i + 1) % 5 == 0:
+            print(f"[summary] {i+1}/{len(target_posts)} 완료")
 
     print(f"[summary] 요약 완료")
     return posts
