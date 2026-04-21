@@ -50,13 +50,12 @@ DEFAULT_CONFIG = {
     "dc": {
         "enabled": True,
         "gallery_id": "first_descendant",
-        "pages": 3,
+        "pages": 10,
         "date_start": "2025-01-01",
         "date_end": "2099-12-31",
     },
     "keywords": ["turret", "포탑", "barricade", "바리케이트", "onslaught", "격돌"],
     "output_path": "data.json",
-    "translate_english": True,
 }
 
 
