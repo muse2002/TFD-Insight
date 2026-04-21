@@ -322,7 +322,8 @@ def crawl_dc(cfg):
         "Referer": "https://gall.dcinside.com/",
     })
 
-    for page in range(1, pages + 1):
+    max_pages = 30   # 무한 루프 방지
+    for page in range(1, max_pages + 1):
         list_url = f"https://gall.dcinside.com/mgallery/board/lists/?id={gall_id}&page={page}"
         try:
             r = session.get(list_url, timeout=15)
@@ -340,6 +341,7 @@ def crawl_dc(cfg):
             break
 
         found_in_page = 0
+        too_old_count = 0   # 날짜 범위보다 오래된 게시글 수
         for row in rows:
             try:
                 subject_el = row.select_one("td.gall_subject")
@@ -361,9 +363,14 @@ def crawl_dc(cfg):
                 date_str = date_el.get("title", "") or date_el.get_text(strip=True) if date_el else ""
                 post_date = parse_dc_date(date_str)
                 if post_date is None:
-                    print(f"[dc] 날짜 파싱 실패: '{date_str}' → 오늘로 대체")
                     post_date = datetime.now().date()
-                if not (date_start <= post_date <= date_end):
+
+                # 날짜 범위보다 미래면 스킵
+                if post_date > date_end:
+                    continue
+                # 날짜 범위보다 과거면 카운트 (페이지 중단 판단용)
+                if post_date < date_start:
+                    too_old_count += 1
                     continue
 
                 rec_el = row.select_one("td.gall_recommend")
@@ -391,8 +398,13 @@ def crawl_dc(cfg):
             except Exception:
                 continue
 
-        print(f"[dc] page {page}: {found_in_page}건")
-        if found_in_page == 0 and page > 1:
+        print(f"[dc] page {page}: {found_in_page}건 (범위 밖: {too_old_count}건)")
+
+        # 이 페이지의 과반수가 날짜 범위 밖이면 더 넘길 필요 없음
+        if too_old_count > len(rows) // 2:
+            print(f"[dc] 날짜 범위 밖 게시글이 과반수, 수집 중단")
+            break
+        if found_in_page == 0 and too_old_count == 0 and page > 1:
             break
         time.sleep(0.8)
 
@@ -561,12 +573,12 @@ def sentiment_rule(text):
     neg = sum(1 for w in RULE_NEG if w in t)
     imp = sum(1 for w in RULE_IMP if w in t)
     if imp > max(pos, neg) or (imp >= 1 and "?" in text):
-        return "개선"
+        return "기타"
     if neg > pos:
         return "부정"
     if pos > 0:
         return "긍정"
-    return "개선" if imp else "긍정"
+    return "기타" if imp else "긍정"
 
 
 def sentiment_batch(posts, cfg=None):
@@ -609,7 +621,7 @@ def main():
     print(f"\n감성 분석 시작 (룰 기반)...")
     sentiments = sentiment_batch(classified, cfg)
     for p, s in zip(classified, sentiments):
-        p["sentiment"] = s if s in ("긍정", "부정", "개선") else "개선"
+        p["sentiment"] = s if s in ("긍정", "부정", "기타") else "개선"
 
     # 영어 게시글 번역 (Reddit → 한글)
     if cfg.get("translate_english", True):
@@ -627,7 +639,7 @@ def main():
     )
 
     # 통계
-    sent_count = {s: sum(1 for p in classified if p["sentiment"] == s) for s in ("긍정", "부정", "개선")}
+    sent_count = {s: sum(1 for p in classified if p["sentiment"] == s) for s in ("긍정", "부정", "기타")}
     src_count = {s: sum(1 for p in classified if p["source"] == s) for s in ("Reddit", "DC갤러리")}
 
     print("\n" + "=" * 60)
