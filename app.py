@@ -25,8 +25,6 @@ from crawler import (
     fetch_dc_details,
     filter_by_keywords,
     sentiment_batch,
-    translate_posts,
-    summarize_posts,
     extract_keywords_from_posts,
     DEFAULT_CONFIG,
 )
@@ -113,10 +111,6 @@ def crawl():
     # 키워드 (평면 리스트, OR 매칭)
     if "keywords" in body and isinstance(body["keywords"], list):
         cfg["keywords"] = body["keywords"]
-
-    # 번역 설정
-    if "translate_english" in body:
-        cfg["translate_english"] = bool(body["translate_english"])
 
     # 동기 실행 (Render Free는 타임아웃이 길지 않으므로 빠르게 처리)
     try:
@@ -253,46 +247,6 @@ def discover():
         err_msg = str(e)
         update_state(status="error", message=f"에러: {err_msg}", progress=0, error=err_msg)
         return jsonify({"error": err_msg}), 500
-
-
-@app.route("/translate", methods=["POST", "OPTIONS"])
-def translate():
-    """번역 API: 게시글 배열을 받아서 영어 본문에 한국어 번역 추가 후 반환."""
-    if request.method == "OPTIONS":
-        return "", 204
-    try:
-        body = request.get_json() or {}
-    except Exception:
-        body = {}
-
-    items = body.get("items", [])
-    if not items:
-        return jsonify({"error": "items가 필요합니다"}), 400
-
-    print(f"[translate] {len(items)}건 번역 요청")
-    translate_posts(items)
-
-    return jsonify({"ok": True, "items": items, "count": len(items)})
-
-
-@app.route("/summarize", methods=["POST", "OPTIONS"])
-def summarize():
-    """요약 API: 게시글 배열을 받아서 AI 요약 추가 후 반환."""
-    if request.method == "OPTIONS":
-        return "", 204
-    try:
-        body = request.get_json() or {}
-    except Exception:
-        body = {}
-
-    items = body.get("items", [])
-    if not items:
-        return jsonify({"error": "items가 필요합니다"}), 400
-
-    print(f"[summarize] {len(items)}건 요약 요청")
-    summarize_posts(items)
-
-    return jsonify({"ok": True, "items": items, "count": len(items)})
 
 
 @app.route("/dc-detail", methods=["POST", "OPTIONS"])
