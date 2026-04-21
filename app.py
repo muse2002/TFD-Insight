@@ -141,7 +141,7 @@ def crawl():
         update_state(status="analyzing", message=f"감성분석 중... ({len(classified)}건)", progress=70)
         sentiments = sentiment_batch(classified, cfg)
         for p, s in zip(classified, sentiments):
-            p["sentiment"] = s if s in ("긍정", "부정", "개선") else "개선"
+            p["sentiment"] = s if s in ("긍정", "부정", "기타") else "기타"
 
         for i, p in enumerate(classified):
             p["id"] = i + 1
@@ -166,7 +166,7 @@ def crawl():
                 "dc": sum(1 for p in classified if p["source"] == "DC갤러리"),
                 "positive": sum(1 for p in classified if p["sentiment"] == "긍정"),
                 "negative": sum(1 for p in classified if p["sentiment"] == "부정"),
-                "improvement": sum(1 for p in classified if p["sentiment"] == "개선"),
+                "improvement": sum(1 for p in classified if p["sentiment"] == "기타"),
             },
             "run_at": datetime.utcnow().isoformat(),
         })
