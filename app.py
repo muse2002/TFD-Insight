@@ -287,7 +287,7 @@ def report():
     if not api_key:
         return jsonify({"error": "GEMINI_API_KEY가 설정되지 않았습니다"}), 400
 
-    # 게시글을 텍스트로 정리 (최대 4000자)
+    # 게시글을 텍스트로 정리 (최대 4000자) — URL 포함
     posts_text = ""
     for i, p in enumerate(items[:50]):
         source = p.get("source", "")
@@ -295,7 +295,8 @@ def report():
         sentiment = p.get("sentiment", "")
         tags = ", ".join(p.get("tags", []))
         text = (p.get("text_ko") or p.get("text", ""))[:150]
-        posts_text += f"[{i+1}] [{source}] [{ptype}] [{sentiment}] [{tags}] {text}\n"
+        url = p.get("url", "")
+        posts_text += f"[#{i+1}] [{source}] [{ptype}] [{sentiment}] [{tags}] {text} (URL: {url})\n"
         if len(posts_text) > 4000:
             break
 
@@ -310,7 +311,11 @@ def report():
 5. **개선 요청** (유저들이 원하는 변화 3~5개)
 6. **주목할 트렌드** (특이 사항이나 급부상 이슈)
 
-마크다운 형식으로 작성하되, 각 항목은 구체적인 유저 의견을 인용하여 작성해주세요.
+중요한 규칙:
+- 마크다운 형식으로 작성
+- 각 분석 항목에서 유저 의견을 인용할 때, 반드시 해당 게시글 번호와 URL을 함께 표기
+- 인용 형식: "유저 의견 내용" ([#{게시글번호}](URL))
+- 예시: "포탑 시스템이 너무 약하다" ([#3](https://www.reddit.com/r/...))
 
 게시글 데이터:
 {posts_text}"""
