@@ -70,94 +70,138 @@ def load_or_create_config(path="config.json"):
 
 # =====================================================
 # Reddit 크롤러 (공식 JSON API, 인증 불필요)
-# 본문(post) + 코멘트(comment) 분리 수집
+# 본문만 수집 (코멘트는 키워드 매칭 후 별도 수집)
+# 날짜 범위 밖 나올 때까지 페이지네이션
 # =====================================================
 def crawl_reddit(cfg):
     if not cfg.get("enabled"):
         return []
     sub = cfg["subreddit"]
     sort = cfg.get("sort", "new")
-    limit = cfg.get("limit", 50)
-    fetch_comments = cfg.get("fetch_comments", True)
-    max_comments_per_post = cfg.get("max_comments_per_post", 10)
-    print(f"[reddit] r/{sub} {sort} {limit}건 수집 중... (코멘트: {'ON' if fetch_comments else 'OFF'})")
+    limit_per_page = 100
+    max_pages = 10
 
-    params = {"limit": limit, "raw_json": 1}
-    if sort == "top":
-        params["t"] = cfg.get("time_filter", "week")
-
-    url = f"https://www.reddit.com/r/{sub}/{sort}.json?{urlencode(params)}"
-    headers = {"User-Agent": "tfd-insight-crawler/1.0"}
-
-    try:
-        r = requests.get(url, headers=headers, timeout=15)
-        r.raise_for_status()
-    except Exception as e:
-        print(f"[reddit] 요청 실패: {e}")
-        return []
-
-    results = []
     date_start = datetime.fromisoformat(cfg["date_start"])
     date_end = datetime.fromisoformat(cfg["date_end"]) + timedelta(days=1)
-    post_count = 0
-    comment_count = 0
 
-    for item in r.json().get("data", {}).get("children", []):
-        d = item.get("data", {})
-        created = datetime.fromtimestamp(d.get("created_utc", 0))
-        if not (date_start <= created < date_end):
-            continue
-        title = d.get("title", "")
-        body = d.get("selftext", "")
-        text = f"{title}\n\n{body}".strip() if body else title
-        permalink = d.get("permalink", "")
-        post_url = "https://www.reddit.com" + permalink
+    print(f"[reddit] r/{sub} {sort} 본문 수집 시작")
+    print(f"[reddit] 기간: {cfg['date_start']} ~ {cfg['date_end']}")
 
-        results.append({
-            "source": "Reddit",
-            "type": "post",
-            "text": text,
-            "date": created.strftime("%Y-%m-%d"),
-            "upvotes": d.get("score", 0),
-            "num_comments": d.get("num_comments", 0),
-            "url": post_url,
-        })
-        post_count += 1
+    headers = {"User-Agent": "tfd-insight-crawler/1.0"}
+    results = []
+    after = None
 
-        # 코멘트 수집 — 게시글 URL.json으로 접근
-        if fetch_comments and permalink:
-            try:
-                comment_url = f"https://www.reddit.com{permalink}.json?limit={max_comments_per_post}&raw_json=1"
-                cr = requests.get(comment_url, headers=headers, timeout=15)
-                if cr.status_code == 200:
-                    cdata = cr.json()
-                    # Reddit JSON: [0]=게시글, [1]=코멘트 트리
-                    if isinstance(cdata, list) and len(cdata) > 1:
-                        comments_tree = cdata[1].get("data", {}).get("children", [])
-                        for cidx, c in enumerate(comments_tree):
-                            if cidx >= max_comments_per_post:
-                                break
-                            cd = c.get("data", {})
-                            cbody = cd.get("body", "")
-                            if not cbody or cd.get("author") in ("[deleted]", "AutoModerator"):
-                                continue
-                            c_created = datetime.fromtimestamp(cd.get("created_utc", 0))
-                            results.append({
-                                "source": "Reddit",
-                                "type": "comment",
-                                "text": cbody,
-                                "date": c_created.strftime("%Y-%m-%d"),
-                                "upvotes": cd.get("score", 0),
-                                "url": post_url,
-                                "parent_title": title[:80],
-                            })
-                            comment_count += 1
-                time.sleep(0.3)   # 과도한 요청 방지
-            except Exception as e:
-                print(f"[reddit] 코멘트 수집 실패: {e}")
+    for page_num in range(1, max_pages + 1):
+        params = {"limit": limit_per_page, "raw_json": 1}
+        if sort == "top":
+            params["t"] = cfg.get("time_filter", "week")
+        if after:
+            params["after"] = after
 
-    print(f"[reddit] 본문 {post_count}건 + 코멘트 {comment_count}건 = 총 {len(results)}건 수집 완료")
+        url = f"https://www.reddit.com/r/{sub}/{sort}.json?{urlencode(params)}"
+        try:
+            r = requests.get(url, headers=headers, timeout=15)
+            r.raise_for_status()
+        except Exception as e:
+            print(f"[reddit] page {page_num} 요청 실패: {e}")
+            break
+
+        data = r.json().get("data", {})
+        children = data.get("children", [])
+        after = data.get("after")
+
+        if not children:
+            break
+
+        too_old_count = 0
+        page_count = 0
+
+        for item in children:
+            d = item.get("data", {})
+            created = datetime.fromtimestamp(d.get("created_utc", 0))
+            if created >= date_end:
+                continue
+            if created < date_start:
+                too_old_count += 1
+                continue
+
+            title = d.get("title", "")
+            body = d.get("selftext", "")
+            text = f"{title}\n\n{body}".strip() if body else title
+            permalink = d.get("permalink", "")
+            post_url = "https://www.reddit.com" + permalink
+
+            results.append({
+                "source": "Reddit",
+                "type": "post",
+                "text": text,
+                "date": created.strftime("%Y-%m-%d"),
+                "upvotes": d.get("score", 0),
+                "num_comments": d.get("num_comments", 0),
+                "url": post_url,
+                "permalink": permalink,
+            })
+            page_count += 1
+
+        print(f"[reddit] page {page_num}: {page_count}건 (범위 밖: {too_old_count}건)")
+
+        if too_old_count > len(children) // 2:
+            print(f"[reddit] 날짜 범위 밖 과반수, 수집 중단")
+            break
+        if not after:
+            print(f"[reddit] 마지막 페이지 도달")
+            break
+        time.sleep(1.0)
+
+    print(f"[reddit] 본문 {len(results)}건 수집 완료 (코멘트 미수집)")
     return results
+
+
+def fetch_reddit_comments(posts, max_comments_per_post=10):
+    """키워드 매칭된 Reddit 게시글에 대해서만 코멘트 수집."""
+    reddit_posts = [p for p in posts if p.get("source") == "Reddit" and p.get("type") == "post" and p.get("permalink")]
+    if not reddit_posts:
+        return []
+
+    print(f"[reddit-comments] {len(reddit_posts)}건 코멘트 수집 시작")
+    headers = {"User-Agent": "tfd-insight-crawler/1.0"}
+    comments = []
+
+    for i, p in enumerate(reddit_posts):
+        permalink = p.get("permalink", "")
+        try:
+            comment_url = f"https://www.reddit.com{permalink}.json?limit={max_comments_per_post}&raw_json=1"
+            cr = requests.get(comment_url, headers=headers, timeout=15)
+            if cr.status_code == 200:
+                cdata = cr.json()
+                if isinstance(cdata, list) and len(cdata) > 1:
+                    comments_tree = cdata[1].get("data", {}).get("children", [])
+                    for cidx, c in enumerate(comments_tree):
+                        if cidx >= max_comments_per_post:
+                            break
+                        cd = c.get("data", {})
+                        cbody = cd.get("body", "")
+                        if not cbody or cd.get("author") in ("[deleted]", "AutoModerator"):
+                            continue
+                        c_created = datetime.fromtimestamp(cd.get("created_utc", 0))
+                        comments.append({
+                            "source": "Reddit",
+                            "type": "comment",
+                            "text": cbody,
+                            "date": c_created.strftime("%Y-%m-%d"),
+                            "upvotes": cd.get("score", 0),
+                            "url": p["url"],
+                            "parent_title": p["text"].split("\n")[0][:80],
+                        })
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"[reddit-comments] 실패: {e}")
+
+        if (i + 1) % 10 == 0:
+            print(f"[reddit-comments] {i+1}/{len(reddit_posts)} 완료")
+
+    print(f"[reddit-comments] {len(comments)}건 코멘트 수집 완료")
+    return comments
 
 
 # =====================================================
@@ -562,9 +606,121 @@ def extract_keywords_from_posts(posts, seed_keywords=None, top_n=40, min_length=
 # =====================================================
 # 룰 기반 감성분석 (한/영 감성 단어 사전)
 # =====================================================
-RULE_POS = ["좋다", "좋네", "좋음", "굿", "재밌", "최고", "만족", "감사", "잘만", "멋짐", "good", "great", "love", "amazing", "awesome", "best", "nice", "fun"]
-RULE_NEG = ["별로", "싫다", "싫어", "쓰레기", "망함", "노잼", "화남", "짜증", "답없", "ㅡㅡ", "bad", "awful", "terrible", "worst", "useless", "broken", "nerf", "너프"]
-RULE_IMP = ["했으면", "필요", "요청", "제안", "개선", "바람", "바랍", "원함", "원해", "부탁", "need", "should", "could", "suggest", "request", "improve", "would love", "wish"]
+
+# 긍정 단어 (한국어 + 영어)
+RULE_POS = [
+    # 한국어 — 일반 긍정
+    "좋다", "좋네", "좋음", "좋아", "좋은", "좋았", "좋고",
+    "굿", "최고", "만족", "감사", "잘만", "멋짐", "멋지", "멋있",
+    "재밌", "재미있", "재미짐", "꿀잼", "핵잼", "존잼",
+    "대박", "미쳤", "실화", "레전드", "갓", "킹", "쩔",
+    "사랑", "고마", "감동", "힐링", "편하", "쾌적",
+    "강하", "강함", "강력", "세다", "셈", "쎔",
+    "개꿀", "개좋", "개잼", "존좋", "핵좋", "졸좋",
+    "혜자", "갓겜", "명작", "인생겜", "꿀겜",
+    "칭찬", "추천", "인정", "ㅇㅈ", "ㄹㅇ좋",
+    "잘만들", "잘했", "잘함", "잘된",
+    "기대", "설렘", "기대됨", "기대된", "두근",
+    "개선됨", "나아졌", "좋아졌", "괜찮", "쓸만",
+    "ㅋㅋㅋㅋㅋ", "ㅎㅎㅎㅎ",  # 긴 ㅋㅋ/ㅎㅎ는 보통 긍정
+    # 한국어 — 게임 특화 긍정
+    "클리어", "깼다", "잡았다", "성공", "달성",
+    "1등", "전섭", "랭킹", "만렙",
+    # 영어 — 일반 긍정
+    "good", "great", "love", "amazing", "awesome", "best", "nice", "fun",
+    "perfect", "excellent", "fantastic", "wonderful", "incredible", "brilliant",
+    "solid", "enjoy", "enjoying", "enjoyed", "worth", "satisfying", "satisfied",
+    "impressive", "beautiful", "cool", "dope", "fire", "goat", "god",
+    "thank", "thanks", "appreciate", "glad", "happy", "excited",
+    "smooth", "clean", "well done", "top tier", "s tier", "top notch",
+    "addicted", "addicting", "can't stop", "hooked",
+    # 영어 — 게임 특화 긍정
+    "buff", "op", "overpowered", "meta", "viable", "strong", "powerful",
+    "clutch", "carries", "insane", "cracked", "goated",
+    "w update", "huge w", "massive w", "big w",
+]
+
+# 부정 단어 (한국어 + 영어)
+RULE_NEG = [
+    # 한국어 — 일반 부정
+    "별로", "싫다", "싫어", "싫은", "싫음",
+    "쓰레기", "쓰렉", "쓰뤠기",
+    "망함", "망했", "망겜", "망작", "폭망",
+    "노잼", "존노잼", "핵노잼",
+    "화남", "화나", "화난", "빡침", "빡친", "빡치",
+    "짜증", "짜증남", "짜증나", "열받",
+    "답없", "답답", "답이없", "노답",
+    "ㅡㅡ", "ㅡ.ㅡ",
+    # 한국어 — 비속어/은어
+    "붕신", "붕겜", "봉신",
+    "좆같", "좆까", "좆밥", "좆됨",
+    "씹", "ㅅㅂ", "시발", "씨발", "시바", "씨바",
+    "지랄", "ㅈㄹ", "개지랄",
+    "ㅂㅅ", "병신", "멍청", "바보",
+    "거지", "거렁뱅이", "구걸",
+    "사기", "먹튀", "호구", "봉이",
+    "미친", "돌았", "정신나",
+    # 한국어 — 게임 특화 부정
+    "너프", "하향", "약화", "칼질",
+    "개판", "엉망", "난장판",
+    "버그", "렉", "튕김", "팅김", "팅기", "크래시",
+    "밸붕", "밸런스붕괴", "밸패", "밸런스패치",
+    "노밸", "무밸", "밸망",
+    "구림", "구리", "구린", "허접", "쓸데없",
+    "존못", "핵못", "개못",
+    "못함", "못하", "못해", "못한",
+    "폭딸", "딸깍", "현질", "과금", "페이투윈", "p2w",
+    "해도해도", "질린", "질림", "지겹", "지루",
+    "똥겜", "쿠소게", "노겜",
+    "ㅠㅠ", "ㅜㅜ", "ㅠ", "ㅜ",  # 슬픔
+    "접는다", "접음", "접을까", "탈주", "탈퇴",
+    "환불", "삭제", "지움", "지웠",
+    "불만", "실망", "아쉽", "아쉬",
+    "못 참", "참을수", "한계",
+    "문제", "심각", "최악", "쓸모없",
+    "안됨", "안돼", "안되", "작동안", "고장",
+    # 영어 — 일반 부정
+    "bad", "awful", "terrible", "worst", "trash", "garbage", "dogshit",
+    "useless", "broken", "disappointed", "disappointing", "frustrating",
+    "annoying", "boring", "tedious", "horrible", "pathetic", "mediocre",
+    "unplayable", "unacceptable", "ridiculous", "joke", "scam",
+    "hate", "hated", "sucks", "suck", "sucked",
+    "stupid", "dumb", "idiotic", "braindead",
+    "waste", "wasted", "waste of time", "regret",
+    "dead game", "dying game", "ded", "dead",
+    "quit", "quitting", "uninstall", "refund",
+    "lag", "laggy", "crash", "crashes", "bug", "buggy", "glitch",
+    # 영어 — 게임 특화 부정
+    "nerf", "nerfed", "gutted", "ruined", "destroyed", "killed",
+    "underwhelming", "underpowered", "weak", "too weak",
+    "unfair", "unfun", "unbalanced", "imbalanced",
+    "p2w", "pay to win", "paywall", "cash grab",
+    "rng", "rng hell", "drop rate",
+    "grind", "grindy", "tedious grind",
+    "l update", "huge l", "massive l", "big l",
+]
+
+# 기타/제안/질문 단어 (한국어 + 영어)
+RULE_IMP = [
+    # 한국어 — 제안/요청
+    "했으면", "필요", "요청", "제안", "개선",
+    "바람", "바랍", "원함", "원해", "부탁",
+    "해줘", "해주세", "해달", "해라", "하라",
+    "넣어줘", "추가해", "만들어줘", "바꿔줘", "고쳐줘",
+    "언제", "아직", "왜안", "빨리",
+    # 한국어 — 질문
+    "어떻게", "어떡", "뭐가", "뭘로", "추천좀", "알려줘",
+    "어디서", "몇", "할까", "할지", "하나요",
+    # 영어 — 제안/요청
+    "need", "should", "could", "suggest", "request", "improve",
+    "would love", "wish", "hope", "hopefully",
+    "please", "pls", "plz",
+    "when", "add", "bring back", "revert",
+    "fix", "change", "rework", "tweak", "adjust",
+    "buff please", "needs buff", "needs rework",
+    "feedback", "idea", "suggestion",
+    "why not", "how about", "what if", "what about",
+]
 
 
 def sentiment_rule(text):
@@ -572,13 +728,18 @@ def sentiment_rule(text):
     pos = sum(1 for w in RULE_POS if w in t)
     neg = sum(1 for w in RULE_NEG if w in t)
     imp = sum(1 for w in RULE_IMP if w in t)
-    if imp > max(pos, neg) or (imp >= 1 and "?" in text):
-        return "기타"
-    if neg > pos:
+    has_question = "?" in text or "？" in text
+    # 부정 단어가 있으면 물음표와 관계없이 부정 우선
+    if neg > 0 and neg >= pos:
         return "부정"
+    if pos > 0 and pos > neg and pos > imp:
+        return "긍정"
+    # 물음표 + 제안 단어 → 기타
+    if has_question or imp > 0:
+        return "기타"
     if pos > 0:
         return "긍정"
-    return "기타" if imp else "긍정"
+    return "기타"
 
 
 def sentiment_batch(posts, cfg=None):
