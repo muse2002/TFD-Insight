@@ -21,6 +21,7 @@ from flask_cors import CORS
 
 from crawler import (
     crawl_reddit,
+    fetch_reddit_comments,
     crawl_dc,
     fetch_dc_details,
     filter_by_keywords,
@@ -120,11 +121,11 @@ def crawl():
         if cfg["reddit"].get("enabled", True):
             all_posts.extend(crawl_reddit(cfg["reddit"]))
 
-        update_state(message="DC갤러리 수집 중...", progress=35)
+        update_state(message="DC갤러리 수집 중...", progress=30)
         if cfg["dc"].get("enabled", True):
             all_posts.extend(crawl_dc(cfg["dc"]))
 
-        update_state(message=f"키워드 매칭 중... ({len(all_posts)}건)", progress=55)
+        update_state(message=f"키워드 매칭 중... ({len(all_posts)}건)", progress=50)
         keywords = cfg.get("keywords", [])
         classified = filter_by_keywords(all_posts, keywords)
 
@@ -138,10 +139,27 @@ def crawl():
             )
             return jsonify({"error": "키워드 매칭된 게시글이 없습니다", "collected": len(all_posts), "items": []}), 200
 
-        update_state(status="analyzing", message=f"감성분석 중... ({len(classified)}건)", progress=70)
+        # 키워드 매칭된 Reddit 게시글에만 코멘트 수집
+        reddit_matched = [p for p in classified if p.get("source") == "Reddit"]
+        if reddit_matched:
+            update_state(message=f"Reddit 코멘트 수집 중... ({len(reddit_matched)}건)", progress=65)
+            comments = fetch_reddit_comments(reddit_matched)
+            # 코멘트에도 키워드 태그 상속
+            for c in comments:
+                parent_url = c.get("url", "")
+                parent = next((p for p in classified if p.get("url") == parent_url), None)
+                if parent:
+                    c["tags"] = parent.get("tags", [])
+            classified.extend(comments)
+
+        update_state(status="analyzing", message=f"감성분석 중... ({len(classified)}건)", progress=80)
         sentiments = sentiment_batch(classified, cfg)
         for p, s in zip(classified, sentiments):
             p["sentiment"] = s if s in ("긍정", "부정", "기타") else "기타"
+
+        # permalink 필드 제거 (프론트에 불필요)
+        for p in classified:
+            p.pop("permalink", None)
 
         for i, p in enumerate(classified):
             p["id"] = i + 1
