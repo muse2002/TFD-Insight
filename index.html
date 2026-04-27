@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TFD Insight · Community Intelligence</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable.min.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: #09090b; min-height: 100vh; }
+    body { font-family: 'Pretendard Variable', 'Apple SD Gothic Neo', -apple-system, sans-serif; color: #d4d4d8; -webkit-font-smoothing: antialiased; }
+    input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); cursor: pointer; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.08); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.14); }
+    #loading { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #09090b; z-index: 9999; transition: opacity .4s; gap: 20px; }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+    .loading-dots { display: flex; gap: 8px; }
+    .loading-dots .dot { width: 8px; height: 8px; border-radius: 50%; background: #34D399; animation: pulse 1.2s ease-in-out infinite; }
+    .loading-dots .dot:nth-child(2) { animation-delay: .15s; background: #FBBF24; }
+    .loading-dots .dot:nth-child(3) { animation-delay: .3s; background: #F87171; }
+    #loading-text { font-size: 12px; color: #71717a; letter-spacing: 2px; text-transform: uppercase; }
+    @keyframes pulse { 0%, 80%, 100% { opacity: .3; transform: scale(.8); } 40% { opacity: 1; transform: scale(1); } }
+    @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+    #error-box { display: none; position: fixed; inset: 20px; background: #111114; border: 1px solid #F87171; border-radius: 12px; padding: 24px; z-index: 10000; font-family: monospace; color: #F87171; font-size: 13px; line-height: 1.7; overflow: auto; }
+    #error-box h2 { color: #F87171; margin-bottom: 12px; font-size: 16px; }
+    #error-box pre { color: #d4d4d8; background: #09090b; padding: 12px; border-radius: 8px; margin-top: 8px; white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <div id="loading">
+    <div class="loading-dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+    <div id="loading-text">Loading libraries...</div>
+  </div>
+  <div id="error-box"></div>
+  <div id="root"></div>
+
+  <script>
+    window.__loadingEl = document.getElementById('loading');
+    window.__loadingText = document.getElementById('loading-text');
+    window.__errorBox = document.getElementById('error-box');
+
+    window.__showError = function(title, detail) {
+      window.__errorBox.innerHTML = '<h2>' + title + '</h2><pre>' + String(detail).replace(/</g, '&lt;') + '</pre>';
+      window.__errorBox.style.display = 'block';
+      if (window.__loadingEl) window.__loadingEl.style.display = 'none';
+    };
+
+    window.addEventListener('error', function(e) {
+      window.__showError('Runtime Error', (e.error && e.error.stack) || e.message || String(e));
+    });
+  </script>
+
+  <!-- 순차 동기 로드: React → ReactDOM → PropTypes → Recharts → Babel -->
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+  <script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+  <script crossorigin src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
+
+  <script>
+    // 라이브러리 로드 확인
+    (function() {
+      var missing = [];
+      if (typeof React === 'undefined') missing.push('React');
+      if (typeof ReactDOM === 'undefined') missing.push('ReactDOM');
+      if (typeof PropTypes === 'undefined') missing.push('PropTypes');
+      if (typeof Recharts === 'undefined') missing.push('Recharts');
+      if (typeof Babel === 'undefined') missing.push('Babel');
+      if (missing.length > 0) {
+        window.__showError('라이브러리 로드 실패', '다음 라이브러리가 로드되지 않았습니다: ' + missing.join(', ') + '\n\n인터넷 연결을 확인하거나, 방화벽이 unpkg.com을 차단하고 있는지 확인해주세요.');
+      } else {
+        window.__loadingText.textContent = 'Compiling...';
+      }
+    })();
+  </script>
+
+  <script type="text/babel" data-presets="react">
+    try {
+      const { useState, useMemo, useEffect } = React;
+      const { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, LineChart, Line, CartesianGrid, Area, AreaChart } = Recharts;
+
+
+// 데모 데이터 — type: "post" | "comment" 구분
+const DEMO_DATA = [
+  { id: 1, source: "Reddit", type: "post", tags: ["turret"], sentiment: "긍정", text: "New turret system is actually amazing. The upgrade paths feel meaningful.", date: "2026-04-15", upvotes: 142, url: "https://www.reddit.com/r/TheFirstDescendant/" },
+  { id: 2, source: "Reddit", type: "comment", tags: ["turret"], sentiment: "긍정", text: "Agreed, the turret upgrade tree is one of the best additions to the game.", date: "2026-04-15", upvotes: 34, url: "https://www.reddit.com/r/TheFirstDescendant/", parent_title: "New turret system is actually amazing" },
+  { id: 3, source: "Reddit", type: "post", tags: ["turret"], sentiment: "부정", text: "Turrets feel underpowered in higher difficulties. They just tickle enemies past wave 6.", date: "2026-04-15", upvotes: 87, url: "https://www.reddit.com/r/TheFirstDescendant/" },
+  { id: 4, source: "Reddit", type: "post", tags: ["barricade"], sentiment: "기타", text: "Barricades need a durability indicator. I never know when they're about to break.", date: "2026-04-14", upvotes: 203, url: "https://www.reddit.com/r/TheFirstDescendant/" },
+  { id: 5, source: "Reddit", type: "comment", tags: ["barricade"], sentiment: "기타", text: "This! Also barricade placement should snap to grid for better positioning.", date: "2026-04-14", upvotes: 45, url: "https://www.reddit.com/r/TheFirstDescendant/", parent_title: "Barricades need a durability indicator" },
+  { id: 6, source: "Reddit", type: "post", tags: ["onslaught"], sentiment: "긍정", text: "Onslaught mode is genuinely fun. The intensity ramps up perfectly.", date: "2026-04-13", upvotes: 156, url: "https://www.reddit.com/r/TheFirstDescendant/" },
+  { id: 7, source: "DC갤러리", type: "post", tags: ["포탑"], sentiment: "긍정", text: "포탑 업글 시스템 진짜 잘 만들었다 ㅋㅋ 조합 찾는 재미가 있음", date: "2026-04-15", upvotes: 45, url: "https://gall.dcinside.com/mgallery/board/lists/?id=first_descendant" },
+  { id: 8, source: "DC갤러리", type: "post", tags: ["바리케이트"], sentiment: "부정", text: "바리케이트 왜 이렇게 약함? 3웨이브도 못 버팀 ㅡㅡ", date: "2026-04-14", upvotes: 78, url: "https://gall.dcinside.com/mgallery/board/lists/?id=first_descendant" },
+  { id: 9, source: "DC갤러리", type: "post", tags: ["격돌"], sentiment: "부정", text: "격돌 진짜 좆같노 밸런스 개판", date: "2026-04-13", upvotes: 42, url: "https://gall.dcinside.com/mgallery/board/lists/?id=first_descendant" },
+  { id: 10, source: "DC갤러리", type: "post", tags: ["격돌"], sentiment: "기타", text: "격돌 몹 안나오는 버그 걸렸네", date: "2026-04-13", upvotes: 6, url: "https://gall.dcinside.com/mgallery/board/lists/?id=first_descendant" },
+];
+
+const SC = { "긍정": "#34D399", "부정": "#F87171", "기타": "#FBBF24" };
+const SRC_C = { "Reddit": "#FF6B35", "DC갤러리": "#60A5FA" };
+const SENTS = ["긍정", "부정", "기타"];
+const TYPE_C = { "post": "#a78bfa", "comment": "#818cf8" };
+
+const CTip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{ background: "#111114", border: "1px solid #2a2a30", borderRadius: 10, padding: "10px 14px", fontSize: 12, boxShadow: "0 8px 32px rgba(0,0,0,.5)" }}>
+      {label && <div style={{ color: "#a1a1aa", marginBottom: 6, fontSize: 11 }}>{label}</div>}
+      {payload.map((p, i) => (
+        <div key={i} style={{ color: p.color || "#d4d4d8", marginTop: 3, display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: p.color, display: "inline-block" }} />
+          {p.name}: <span style={{ fontWeight: 500, marginLeft: 2, color: "#e4e4e7" }}>{p.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const LS_KEY = "tfd_insight_v2";
+const loadLS = () => { try { return JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch { return {}; } };
+const saveLS = (patch) => { try { const cur = loadLS(); localStorage.setItem(LS_KEY, JSON.stringify({ ...cur, ...patch })); } catch {} };
+
+// ================================================================
+// 🔧 여기만 바꾸면 됩니다 — Render 배포 후 받은 URL을 아래에 입력
+// 예: "https://tfd-insight.onrender.com"
+// ================================================================
+const DEFAULT_API_URL = "https://tfd-insight.onrender.com";
+// ================================================================
+
+const DEFAULT_KEYWORDS = ["turret", "포탑", "barricade", "바리케이트", "onslaught", "격돌"];
+
+const DEFAULT_DATES = {
+  reddit: { start: "2026-04-01", end: "2026-04-30" },
+  dc: { start: "2026-04-01", end: "2026-04-30" },
+};
+
+function App() {
+  const saved = typeof window !== "undefined" ? loadLS() : {};
+  const [keywords, setKeywords] = useState(saved.keywords || DEFAULT_KEYWORDS);
+  const [newKw, setNewKw] = useState("");
+  const [fSe, setFSe] = useState("all");
+  const [fType, setFType] = useState("all");
+  const [fTag, setFTag] = useState("all");
+  const [crawl, setCrawl] = useState("idle");
+  const [tab, setTab] = useState("reddit");
+  const [ready, setReady] = useState(false);
+  const [crawlDates, setCrawlDates] = useState(saved.crawlDates || DEFAULT_DATES);
+  const [dataset, setDataset] = useState(saved.dataset || DEMO_DATA);
+  const [datasetInfo, setDatasetInfo] = useState(saved.datasetInfo || { source: "demo", count: DEMO_DATA.length, loadedAt: null });
+  const [toast, setToast] = useState(null);
+  const [apiUrl, setApiUrl] = useState(saved.apiUrl || DEFAULT_API_URL);
+  const [apiModalOpen, setApiModalOpen] = useState(false);
+  const [apiUrlDraft, setApiUrlDraft] = useState(saved.apiUrl || DEFAULT_API_URL);
+
+  // 키워드 발견 상태
+  const [kwMode, setKwMode] = useState("manage");
+  const [discoverStatus, setDiscoverStatus] = useState("idle");
+  const [discoveredWords, setDiscoveredWords] = useState([]);
+  const [selectedDiscovered, setSelectedDiscovered] = useState(new Set());
+
+  useEffect(() => { requestAnimationFrame(() => setReady(true)); }, []);
+  useEffect(() => { saveLS({ keywords }); }, [keywords]);
+  useEffect(() => { saveLS({ crawlDates }); }, [crawlDates]);
+  useEffect(() => { saveLS({ dataset, datasetInfo: { ...datasetInfo, count: dataset.length } }); }, [dataset, datasetInfo]);
+  useEffect(() => { saveLS({ apiUrl }); }, [apiUrl]);
+  useEffect(() => { if (toast) { const t = setTimeout(() => setToast(null), 3200); return () => clearTimeout(t); } }, [toast]);
+
+  const showToast = (type, msg) => setToast({ type, msg });
+
+  const handleUploadJSON = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const arr = JSON.parse(ev.target.result);
+        if (!Array.isArray(arr)) throw new Error("JSON 배열이 아닙니다");
+        // 기존 데이터에 병합 (같은 URL 중복 제거)
+        setDataset(prev => {
+          const existingUrls = new Set(prev.map(p => p.url));
+          const newItems = arr.filter(p => !existingUrls.has(p.url));
+          const merged = [...prev, ...newItems];
+          // id 재부여
+          merged.forEach((p, i) => { p.id = i + 1; });
+          return merged;
+        });
+        setDatasetInfo(prev => ({
+          source: prev.source === "demo" ? "upload" : prev.source,
+          count: 0, // useEffect에서 갱신됨
+          loadedAt: new Date().toISOString(),
+        }));
+        showToast("success", `${arr.length}건 업로드 (기존 데이터에 병합)`);
+      } catch (err) { showToast("error", "JSON 파싱 실패: " + err.message); }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  const resetToDemo = () => {
+    setDataset(DEMO_DATA);
+    setDatasetInfo({ source: "demo", count: DEMO_DATA.length, loadedAt: null });
+    showToast("success", "데모 데이터로 초기화되었습니다");
+  };
+
+  const resetAll = () => {
+    if (!confirm("모든 설정(키워드, 날짜, 데이터)을 초기화합니다. 계속할까요?")) return;
+    localStorage.removeItem(LS_KEY);
+    setKeywords(DEFAULT_KEYWORDS);
+    setCrawlDates(DEFAULT_DATES);
+    setDataset(DEMO_DATA);
+    setDatasetInfo({ source: "demo", count: DEMO_DATA.length, loadedAt: null });
+    showToast("success", "모든 설정이 초기화되었습니다");
+  };
+
+  // 데이터 필터 — 소스별
+  const redditData = useMemo(() => dataset.filter(d => d.source === "Reddit"), [dataset]);
+  const dcData = useMemo(() => dataset.filter(d => d.source === "DC갤러리"), [dataset]);
+  const allData = dataset;
+
+  // 필터된 데이터 (현재 탭 기준)
+  const filteredData = useMemo(() => {
+    let src = tab === "reddit" ? redditData : tab === "dc" ? dcData : allData;
+    return src.filter(d => {
+      if (fSe !== "all" && d.sentiment !== fSe) return false;
+      if (fType !== "all" && d.type !== fType) return false;
+      if (fTag !== "all" && !(d.tags || []).includes(fTag)) return false;
+      return true;
+    });
+  }, [tab, redditData, dcData, allData, fSe, fType, fTag]);
+
+  // 대시보드 통계
+  const dashData = useMemo(() => allData, [allData]);
+  const pie = SENTS.map(s => ({ name: s, value: dashData.filter(d => d.sentiment === s).length }));
+  const allTags = useMemo(() => [...new Set(dashData.flatMap(d => d.tags || []))], [dashData]);
+  const bars = useMemo(() => allTags.map(tag => {
+    const items = dashData.filter(d => (d.tags || []).includes(tag));
+    return { name: tag, "긍정": items.filter(i => i.sentiment === "긍정").length, "부정": items.filter(i => i.sentiment === "부정").length, "기타": items.filter(i => i.sentiment === "기타").length, total: items.length };
+  }), [dashData, allTags]);
+  const srcBars = ["Reddit", "DC갤러리"].map(src => {
+    const g = dashData.filter(d => d.source === src);
+    return { name: src, "긍정": g.filter(i => i.sentiment === "긍정").length, "부정": g.filter(i => i.sentiment === "부정").length, "기타": g.filter(i => i.sentiment === "기타").length };
+  });
+  const timeline = useMemo(() => {
+    const dateMap = {};
+    dashData.forEach(d => {
+      if (!dateMap[d.date]) dateMap[d.date] = { date: d.date, "긍정": 0, "부정": 0, "기타": 0 };
+      if (d.sentiment) dateMap[d.date][d.sentiment]++;
+    });
+    return Object.values(dateMap).sort((a, b) => a.date.localeCompare(b.date));
+  }, [dashData]);
+
+  // Crawl Now
+  const doCrawl = async () => {
+    if (!apiUrl) { setApiModalOpen(true); showToast("error", "API 서버 주소를 먼저 설정하세요"); return; }
+    if (crawl !== "idle") return;
+    setCrawl("crawling");
+    try {
+      const payload = {
+        reddit: { ...crawlDates.reddit, enabled: true },
+        dc: { ...crawlDates.dc, enabled: true },
+        keywords: keywords,
+      };
+      const baseUrl = apiUrl.replace(/\/+$/, "");
+      setCrawl("analyzing");
+      const res = await fetch(`${baseUrl}/crawl`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const result = await res.json();
+      if (result.items && result.items.length > 0) {
+        setDataset(result.items);
+        setDatasetInfo({ source: "live", count: result.items.length, loadedAt: new Date().toISOString() });
+        showToast("success", `실시간 크롤링 완료: ${result.items.length}건`);
+        // DC 본문 자동 수집 시작
+        const dcPosts = result.items.filter(d => d.source === "DC갤러리" && d.type === "post");
+        if (dcPosts.length > 0) {
+          setTimeout(() => autoDcDetail(result.items, dcPosts), 500);
+        }
+      } else {
+        showToast("error", result.error || "수집된 게시글이 없습니다");
+      }
+    } catch (err) {
+      showToast("error", "크롤링 실패: " + err.message);
+    } finally {
+      setCrawl("idle");
+    }
+  };
+
+  // 키워드 발견
+  const doDiscover = async () => {
+    if (!apiUrl) { setApiModalOpen(true); showToast("error", "API 서버 주소를 먼저 설정하세요"); return; }
+    setDiscoverStatus("loading");
+    setDiscoveredWords([]);
+    setSelectedDiscovered(new Set());
+    try {
+      const baseUrl = apiUrl.replace(/\/+$/, "");
+      const res = await fetch(`${baseUrl}/discover`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reddit: { ...crawlDates.reddit, enabled: true },
+          dc: { ...crawlDates.dc, enabled: true },
+          top_n: 40,
+          exclude_words: keywords,
+        }),
+      });
+      const result = await res.json();
+      if (result.keywords && result.keywords.length > 0) {
+        setDiscoveredWords(result.keywords);
+        setDiscoverStatus("done");
+        showToast("success", `${result.post_count}건에서 ${result.keywords.length}개 키워드 발견`);
+      } else {
+        setDiscoverStatus("done");
+        showToast("error", result.error || "발견된 키워드가 없습니다");
+      }
+    } catch (err) {
+      setDiscoverStatus("idle");
+      showToast("error", "발견 실패: " + err.message);
+    }
+  };
+
+  const registerDiscovered = () => {
+    if (selectedDiscovered.size === 0) return;
+    setKeywords(prev => [...new Set([...prev, ...selectedDiscovered])]);
+    showToast("success", `${selectedDiscovered.size}개 키워드 등록 완료`);
+    setSelectedDiscovered(new Set());
+    setKwMode("manage");
+  };
+
+  // DC 본문 자동 수집 (Crawl Now 후 자동 호출)
+  const autoDcDetail = async (allItems, dcPosts) => {
+    if (!apiUrl || dcPosts.length === 0) return;
+    const total = dcPosts.length;
+    const batchSize = 20;
+    setDcDetailStatus("loading");
+    setDcDetailProgress({ done: 0, total });
+    const baseUrl = apiUrl.replace(/\/+$/, "");
+
+    try {
+      let currentItems = [...allItems];
+      for (let i = 0; i < total; i += batchSize) {
+        const batch = dcPosts.slice(i, i + batchSize);
+        const urls = batch.map(p => p.url);
+        const res = await fetch(`${baseUrl}/dc-detail`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ urls }),
+        });
+        const result = await res.json();
+        if (result.ok && result.details) {
+          const detailMap = {};
+          result.details.forEach(d => { detailMap[d.url] = d; });
+          currentItems = currentItems.map(p => {
+            const detail = detailMap[p.url];
+            if (detail && detail.body && p.source === "DC갤러리" && p.type === "post") {
+              return { ...p, text: `${p.text}\n\n${detail.body}` };
+            }
+            return p;
+          });
+          // 댓글 추가
+          result.details.forEach(d => {
+            if (d.comments && d.comments.length > 0) {
+              const parentPost = batch.find(p => p.url === d.url);
+              d.comments.forEach(ctxt => {
+                currentItems.push({
+                  id: currentItems.length + 1,
+                  source: "DC갤러리", type: "comment", text: ctxt,
+                  date: parentPost ? parentPost.date : "",
+                  upvotes: 0, url: d.url,
+                  parent_title: parentPost ? parentPost.text.split("\n")[0].slice(0, 80) : "",
+                  tags: parentPost ? (parentPost.tags || []) : [], sentiment: "기타",
+                });
+              });
+            }
+          });
+        }
+        setDcDetailProgress({ done: Math.min(i + batchSize, total), total });
+      }
+      setDataset(currentItems);
+      setDatasetInfo(prev => ({ ...prev, count: currentItems.length }));
+      setDcDetailStatus("done");
+      showToast("success", `DC 본문 ${total}건 수집 완료`);
+    } catch (err) {
+      setDcDetailStatus("idle");
+      showToast("error", "DC 본문 수집 실패: " + err.message);
+    }
+  };
+
+  // DC 본문 수집 (20건씩 자동 반복)
+  const [dcDetailStatus, setDcDetailStatus] = useState("idle");
+  const [dcDetailProgress, setDcDetailProgress] = useState({ done: 0, total: 0 });
+  const doDcDetail = async () => {
+    if (!apiUrl) { showToast("error", "API 서버 주소를 설정하세요"); return; }
+    // 본문이 없는 DC 게시글만 (제목만 있는 것)
+    const dcPostsNeedBody = dataset.filter(d => d.source === "DC갤러리" && d.type === "post" && !d.text.includes("\n\n"));
+    if (dcPostsNeedBody.length === 0) { showToast("error", "본문 수집할 DC 게시글이 없습니다 (이미 수집됨)"); return; }
+
+    const total = dcPostsNeedBody.length;
+    const batchSize = 20;
+    setDcDetailStatus("loading");
+    setDcDetailProgress({ done: 0, total });
+    const baseUrl = apiUrl.replace(/\/+$/, "");
+
+    try {
+      for (let i = 0; i < total; i += batchSize) {
+        const batch = dcPostsNeedBody.slice(i, i + batchSize);
+        const urls = batch.map(p => p.url);
+
+        const res = await fetch(`${baseUrl}/dc-detail`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ urls }),
+        });
+        const result = await res.json();
+
+        if (result.ok && result.details) {
+          // URL로 매칭해서 본문+댓글 병합
+          const detailMap = {};
+          result.details.forEach(d => { detailMap[d.url] = d; });
+
+          setDataset(prev => {
+            let updated = prev.map(p => {
+              const detail = detailMap[p.url];
+              if (detail && detail.body && p.source === "DC갤러리" && p.type === "post") {
+                return { ...p, text: `${p.text}\n\n${detail.body}` };
+              }
+              return p;
+            });
+            // 댓글 추가
+            result.details.forEach(d => {
+              if (d.comments && d.comments.length > 0) {
+                const parentPost = batch.find(p => p.url === d.url);
+                d.comments.forEach(ctxt => {
+                  updated.push({
+                    id: updated.length + 1,
+                    source: "DC갤러리",
+                    type: "comment",
+                    text: ctxt,
+                    date: parentPost ? parentPost.date : "",
+                    upvotes: 0,
+                    url: d.url,
+                    parent_title: parentPost ? parentPost.text.split("\n")[0].slice(0, 80) : "",
+                    tags: parentPost ? (parentPost.tags || []) : [],
+                    sentiment: "기타",
+                  });
+                });
+              }
+            });
+            return updated;
+          });
+        }
+
+        const done = Math.min(i + batchSize, total);
+        setDcDetailProgress({ done, total });
+      }
+
+      setDcDetailStatus("done");
+      showToast("success", `DC 본문 ${total}건 수집 완료`);
+    } catch (err) {
+      setDcDetailStatus("idle");
+      showToast("error", "DC 본문 수집 실패: " + err.message);
+    }
+  };
+
+  // 분석 보고서 (Gemini)
+  const [reportStatus, setReportStatus] = useState("idle");
+  const [reportText, setReportText] = useState(saved.reportText || "");
+  const doReport = async () => {
+    if (!apiUrl) { showToast("error", "API 서버 주소를 설정하세요"); return; }
+    if (dataset.length === 0) { showToast("error", "크롤링 데이터가 없습니다"); return; }
+    setReportStatus("loading");
+    try {
+      const baseUrl = apiUrl.replace(/\/+$/, "");
+      const res = await fetch(`${baseUrl}/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: dataset }),
+      });
+      const result = await res.json();
+      if (result.ok && result.report) {
+        setReportText(result.report);
+        saveLS({ reportText: result.report });
+        setReportStatus("done");
+        showToast("success", "분석 보고서 생성 완료");
+      } else {
+        setReportStatus("idle");
+        showToast("error", result.error || "보고서 생성 실패");
+      }
+    } catch (err) {
+      setReportStatus("idle");
+      showToast("error", "보고서 실패: " + err.message);
+    }
+  };
+
+  const openLink = (url) => window.open(url, "_blank", "noopener,noreferrer");
+
+  const glass = { background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 16 };
+  const an = (d = 0) => ({ opacity: ready ? 1 : 0, transform: ready ? "translateY(0)" : "translateY(16px)", transition: `all .7s cubic-bezier(.16,1,.3,1) ${d}s` });
+
+  const Sel = ({ label, v, set, opts }) => (
+    <select value={v} onChange={e => set(e.target.value)} style={{
+      padding: "7px 12px 7px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,.12)",
+      background: "rgba(255,255,255,.03)", color: "#d4d4d8", fontSize: 11.5, outline: "none",
+      WebkitAppearance: "none", cursor: "pointer", letterSpacing: .3,
+    }}>
+      {opts.map(o => <option key={o} value={o} style={{ background: "#111114" }}>{o === "all" ? `${label} 전체` : o}</option>)}
+    </select>
+  );
+
+  const tabList = [
+    { id: "reddit", icon: "🔴", label: "Reddit" },
+    { id: "dc", icon: "🔵", label: "DC갤러리" },
+    { id: "dashboard", icon: "📊", label: "Dashboard" },
+    { id: "report", icon: "📝", label: "Report" },
+    { id: "keywords", icon: "🔑", label: "Keywords" },
+  ];
+
+  // 소스별 post/comment 카운트
+  const redditPostCount = redditData.filter(d => d.type === "post").length;
+  const redditCommentCount = redditData.filter(d => d.type === "comment").length;
+  const dcPostCount = dcData.filter(d => d.type === "post").length;
+  const dcCommentCount = dcData.filter(d => d.type === "comment").length;
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#0a0a0c", color: "#e4e4e7", fontFamily: "'Inter','Pretendard',-apple-system,sans-serif" }}>
+      {/* Toast */}
+      {toast && (
+        <div style={{
+          position: "fixed", top: 24, right: 24, zIndex: 9999, padding: "14px 24px",
+          borderRadius: 12, fontSize: 13, fontWeight: 500, letterSpacing: .3,
+          background: toast.type === "success" ? "rgba(52,211,153,.12)" : "rgba(248,113,113,.12)",
+          border: `1px solid ${toast.type === "success" ? "rgba(52,211,153,.25)" : "rgba(248,113,113,.25)"}`,
+          color: toast.type === "success" ? "#34D399" : "#F87171",
+          display: "flex", alignItems: "center", gap: 8,
+          animation: "fadeIn .3s ease",
+        }}>
+          <span>{toast.type === "success" ? "✓" : "!"}</span>
+          <span>{toast.msg}</span>
+        </div>
+      )}
+
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "32px 24px 64px" }}>
+        {/* Header */}
+        <div style={{ marginBottom: 32, ...an(0) }}>
+          <div style={{ fontSize: 10, letterSpacing: 5, color: "#a1a1aa", textTransform: "uppercase", marginBottom: 8 }}>Community Intelligence Platform</div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h1 style={{ fontSize: 32, fontWeight: 700, margin: 0, letterSpacing: -.5 }}>TFD Insight</h1>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button onClick={doCrawl} disabled={crawl !== "idle"} style={{
+                padding: "10px 24px", borderRadius: 50, border: "1px solid rgba(52,211,153,.3)",
+                background: crawl !== "idle" ? "rgba(52,211,153,.03)" : "rgba(52,211,153,.1)",
+                color: "#34D399", fontSize: 13, fontWeight: 500, cursor: crawl === "idle" ? "pointer" : "default",
+                display: "flex", alignItems: "center", gap: 6, transition: "all .3s",
+              }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>
+                {crawl === "idle" ? "Crawl Now" : "수집 중..."}
+              </button>
+              {/* Upload JSON */}
+              <label style={{ padding: "10px 14px", borderRadius: 50, border: "1px solid rgba(255,255,255,.1)", background: "transparent", color: "#a1a1aa", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                <input type="file" accept=".json" onChange={handleUploadJSON} style={{ display: "none" }} />
+              </label>
+              {/* Settings */}
+              <button onClick={() => setApiModalOpen(!apiModalOpen)} style={{ padding: "10px 14px", borderRadius: 50, border: "1px solid rgba(255,255,255,.1)", background: apiUrl ? "rgba(52,211,153,.08)" : "transparent", color: apiUrl ? "#34D399" : "#a1a1aa", cursor: "pointer", fontSize: 12 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+              </button>
+              {/* Reset */}
+              <button onClick={resetAll} style={{ padding: "10px 14px", borderRadius: 50, border: "1px solid rgba(255,255,255,.1)", background: "transparent", color: "#a1a1aa", cursor: "pointer", fontSize: 12 }}>↻</button>
+            </div>
+          </div>
+          {/* Dataset info */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 11 }}>
+            <span style={{ color: datasetInfo.source === "live" ? "#34D399" : "#FBBF24" }}>● {datasetInfo.source === "demo" ? "데모 데이터" : datasetInfo.source === "live" ? "Live data" : datasetInfo.source}</span>
+            <span style={{ color: "#a1a1aa" }}>{datasetInfo.count}건</span>
+            <span style={{ color: "#a1a1aa" }}>Reddit {redditPostCount}글 {redditCommentCount}댓글 · DC {dcPostCount}글 {dcCommentCount}댓글</span>
+          </div>
+        </div>
+
+        {/* API URL Modal */}
+        {apiModalOpen && (
+          <div style={{ ...glass, padding: 24, marginBottom: 20, ...an(.05) }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, color: "#a1a1aa", textTransform: "uppercase", marginBottom: 10 }}>API Server URL</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input value={apiUrlDraft} onChange={e => setApiUrlDraft(e.target.value)} placeholder="https://tfd-insight.onrender.com"
+                style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(255,255,255,.1)", background: "rgba(255,255,255,.02)", color: "#d4d4d8", fontSize: 12, outline: "none" }} />
+              <button onClick={() => { setApiUrl(apiUrlDraft); setApiModalOpen(false); showToast("success", "API URL 저장됨"); }}
+                style={{ padding: "10px 18px", borderRadius: 10, border: "1px solid rgba(52,211,153,.2)", background: "rgba(52,211,153,.06)", color: "#34D399", fontSize: 12, cursor: "pointer" }}>저장</button>
+            </div>
+          </div>
+        )}
+
+        {/* Date pickers */}
+        <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap", ...an(.05) }}>
+          {["reddit", "dc"].map(src => (
+            <div key={src} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 12, ...glass }}>
+              <span style={{ fontSize: 11, color: src === "reddit" ? "#FF6B35" : "#60A5FA", fontWeight: 500 }}>{src === "reddit" ? "Reddit" : "DC갤러리"}</span>
+              <input type="date" value={crawlDates[src].start} onChange={e => setCrawlDates(p => ({ ...p, [src]: { ...p[src], start: e.target.value } }))}
+                style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid rgba(255,255,255,.1)", background: "rgba(255,255,255,.02)", color: "#d4d4d8", fontSize: 11, outline: "none" }} />
+              <span style={{ color: "#a1a1aa", fontSize: 11 }}>~</span>
+              <input type="date" value={crawlDates[src].end} onChange={e => setCrawlDates(p => ({ ...p, [src]: { ...p[src], end: e.target.value } }))}
+                style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid rgba(255,255,255,.1)", background: "rgba(255,255,255,.02)", color: "#d4d4d8", fontSize: 11, outline: "none" }} />
+            </div>
+          ))}
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 4, padding: 3, borderRadius: 50, background: "rgba(255,255,255,.02)", border: "1px solid rgba(255,255,255,.06)", marginBottom: 28, width: "fit-content", ...an(.08) }}>
+          {tabList.map(t => (
+            <button key={t.id} onClick={() => { setTab(t.id); setFSe("all"); setFType("all"); setFTag("all"); }} style={{
+              padding: "9px 20px", borderRadius: 50, fontSize: 12, display: "flex", alignItems: "center", gap: 6,
+              border: tab === t.id ? "1px solid rgba(255,255,255,.1)" : "1px solid transparent",
+              background: tab === t.id ? "rgba(255,255,255,.04)" : "transparent",
+              color: tab === t.id ? "#e4e4e7" : "#a1a1aa",
+              cursor: "pointer", transition: "all .25s", letterSpacing: .3,
+            }}>{t.label}</button>
+          ))}
+        </div>
+
+        {/* ===== REDDIT TAB ===== */}
+        {tab === "reddit" && (
+          <div style={an(.1)}>
+            {/* 번역 안내 */}
+            <div style={{ padding: "10px 16px", borderRadius: 10, background: "rgba(96,165,250,.04)", border: "1px solid rgba(96,165,250,.1)", marginBottom: 16, fontSize: 11, color: "#a1a1aa", lineHeight: 1.7 }}>
+              💡 영어 게시글을 한국어로 보려면: 페이지 <b style={{ color: "#d4d4d8" }}>우클릭</b> → <b style={{ color: "#d4d4d8" }}>"한국어로 번역"</b> (Chrome/Edge 기본 기능)
+            </div>
+            {/* 요약 패널 */}
+            {filteredData.length > 0 && (
+              <div style={{ ...glass, padding: 24, marginBottom: 20 }}>
+                {/* 감성 + 타입 요약 */}
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 11, color: "#a1a1aa" }}>감성:</span>
+                    {SENTS.map(s => {
+                      const c = filteredData.filter(d => d.sentiment === s).length;
+                      return c > 0 ? <span key={s} style={{ padding: "3px 10px", borderRadius: 50, fontSize: 11, background: SC[s] + "15", color: SC[s] }}>{s} {c}</span> : null;
+                    })}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 11, color: "#a1a1aa" }}>타입:</span>
+                    <span style={{ padding: "3px 10px", borderRadius: 50, fontSize: 11, background: "rgba(167,139,250,.12)", color: "#a78bfa" }}>본문 {filteredData.filter(d => d.type === "post").length}</span>
+                    <span style={{ padding: "3px 10px", borderRadius: 50, fontSize: 11, background: "rgba(129,140,248,.12)", color: "#818cf8" }}>댓글 {filteredData.filter(d => d.type === "comment").length}</span>
+                  </div>
+                </div>
+                {/* 키워드별 매칭 건수 */}
+                {(() => {
+                  const kwCounts = {};
+                  filteredData.forEach(d => (d.tags || []).forEach(t => { kwCounts[t] = (kwCounts[t] || 0) + 1; }));
+                  const sorted = Object.entries(kwCounts).sort((a, b) => b[1] - a[1]);
+                  if (sorted.length === 0) return null;
+                  return (
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 11, color: "#a1a1aa", marginBottom: 10 }}>키워드별 매칭 건수:</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {sorted.map(([kw, cnt]) => (
+                          <span key={kw} onClick={() => setFTag(fTag === kw ? "all" : kw)} style={{
+                            padding: "5px 14px", borderRadius: 50, fontSize: 12, cursor: "pointer",
+                            background: fTag === kw ? "rgba(96,165,250,.2)" : "rgba(96,165,250,.08)",
+                            border: fTag === kw ? "1px solid rgba(96,165,250,.4)" : "1px solid transparent",
+                            color: "#60A5FA", transition: "all .2s",
+                          }}>#{kw} <b>{cnt}</b></span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* 필터 */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20, alignItems: "center" }}>
+              <Sel label="감성" v={fSe} set={setFSe} opts={["all", ...SENTS]} />
+              <Sel label="타입" v={fType} set={setFType} opts={["all", "post", "comment"]} />
+              <Sel label="키워드" v={fTag} set={setFTag} opts={["all", ...allTags]} />
+              <span style={{ fontSize: 11, color: "#a1a1aa" }}>{filteredData.length} results</span>
+            </div>
+            {datasetInfo.source === "demo" && (
+              <div style={{ padding: "12px 18px", borderRadius: 12, marginBottom: 16, border: "1px solid rgba(251,191,36,.2)", background: "rgba(251,191,36,.05)", fontSize: 12, color: "#FBBF24", lineHeight: 1.6 }}>
+                현재 <b>데모 데이터</b>입니다. <b>Crawl Now</b>로 실제 데이터를 수집하세요.
+              </div>
+            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {filteredData.length === 0 && <div style={{ ...glass, padding: 40, textAlign: "center", color: "#a1a1aa", fontSize: 13 }}>조건에 맞는 게시글이 없습니다</div>}
+              {filteredData.map(post => <PostCard key={post.id || Math.random()} post={post} onOpen={() => openLink(post.url)} />)}
+            </div>
+          </div>
+        )}
+
+        {/* ===== DC갤러리 TAB ===== */}
+        {/* ===== DC갤러리 TAB ===== */}
+        {tab === "dc" && (
+          <div style={an(.1)}>
+            {/* DC 안내 + 자동/수동 수집 */}
+            <div style={{ ...glass, padding: 24, marginBottom: 16 }}>
+              <div style={{ fontSize: 14, fontWeight: 500, color: "#60A5FA", marginBottom: 10 }}>DC갤러리 데이터 수집</div>
+              <div style={{ fontSize: 13, color: "#d4d4d8", lineHeight: 1.8, marginBottom: 12 }}>
+                <b style={{ color: "#60A5FA" }}>Crawl Now</b> 버튼으로 자동 수집을 시도합니다.<br/>
+                DC갤러리는 해외 IP를 <b style={{ color: "#F87171" }}>불규칙하게 차단</b>하기 때문에, 자동 수집이 실패할 수 있습니다.
+              </div>
+
+              {/* 본문 수집 진행률 */}
+              {dcDetailStatus === "loading" && dcDetailProgress.total > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#a1a1aa", marginBottom: 6 }}>
+                    <span>DC 본문 수집 진행중...</span>
+                    <span>{dcDetailProgress.done}/{dcDetailProgress.total}건</span>
+                  </div>
+                  <div style={{ height: 6, borderRadius: 3, background: "rgba(255,255,255,.06)", overflow: "hidden" }}>
+                    <div style={{
+                      height: "100%", borderRadius: 3,
+                      background: "linear-gradient(90deg, #60A5FA, #a78bfa)",
+                      width: `${(dcDetailProgress.done / dcDetailProgress.total) * 100}%`,
+                      transition: "width .5s ease",
+                    }} />
+                  </div>
+                </div>
+              )}
+              {dcDetailStatus === "done" && (
+                <div style={{ marginBottom: 12, fontSize: 11, color: "#34D399" }}>✓ 본문 수집 완료</div>
+              )}
+
+              {/* 수동 수집 안내 (접이식) */}
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ fontSize: 12, color: "#FBBF24", cursor: "pointer", marginBottom: 10 }}>
+                  ⚠️ 자동 수집 실패 시 수동 수집 방법 (클릭하여 펼치기)
+                </summary>
+                <div style={{ padding: "14px 18px", borderRadius: 10, background: "rgba(255,255,255,.02)", border: "1px solid rgba(255,255,255,.06)", marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, color: "#d4d4d8", lineHeight: 1.8 }}>
+                    현재 무료 해외 서버(Render)를 사용 중이라, DC갤러리가 간헐적으로 접근을 차단합니다.<br/>
+                    이 경우 아래 순서로 <b style={{ color: "#d4d4d8" }}>내 PC에서 직접 수집</b>할 수 있습니다:
+                  </div>
+                  <div style={{ fontSize: 12, color: "#d4d4d8", lineHeight: 1.8, marginTop: 10 }}>
+                    1. 아래 <b style={{ color: "#60A5FA" }}>수집기 다운로드</b> 클릭 → <b>dc_crawl.bat</b> + <b>dc_crawler.py</b> 2개 파일 저장<br/>
+                    2. 2개 파일을 <b>같은 폴더</b>에 넣기<br/>
+                    3. <b>dc_crawl.bat</b>을 <b>더블클릭</b>하여 실행 <span style={{ color: "#FBBF24" }}>(Python 설치 필요)</span><br/>
+                    4. 자동으로 DC갤러리 수집 → 같은 폴더에 <b>dc_data.json</b> 생성<br/>
+                    5. 아래 <b style={{ color: "#34D399" }}>JSON 업로드</b> 버튼으로 파일 올리기
+                  </div>
+                  <div style={{ fontSize: 11, color: "#a1a1aa", marginTop: 8 }}>
+                    ※ Python이 필요합니다. 없으면 <a href="https://www.python.org/downloads/" target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA" }}>python.org</a>에서 설치하세요.
+                  </div>
+                </div>
+                {/* Windows 보안 차단 안내 */}
+                <div style={{ padding: "12px 18px", borderRadius: 10, background: "rgba(248,113,113,.04)", border: "1px solid rgba(248,113,113,.12)", marginBottom: 14, fontSize: 11, color: "#F87171", lineHeight: 1.8 }}>
+                  <b>Windows 보안 경고가 뜨는 경우:</b><br/>
+                  다운받은 파일 우클릭 → <b>속성</b> → 하단의 <b>"차단 해제"</b> 체크 → <b>확인</b> → 다시 더블클릭
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {/* Python bat + py 다운로드 */}
+                  <button onClick={() => {
+                    const dateStart = crawlDates.dc.start || new Date(Date.now() - 7*86400000).toISOString().slice(0,10);
+                    const dateEnd = crawlDates.dc.end || new Date().toISOString().slice(0,10);
+                    const kwList = keywords.length > 0 ? JSON.stringify(keywords) : "[]";
+                    // py 파일 다운로드
+                    const pyCode = `# -*- coding: utf-8 -*-\nimport requests, json, re, time\nfrom datetime import datetime\nfrom bs4 import BeautifulSoup\n\nDATE_START = "${dateStart}"\nDATE_END = "${dateEnd}"\nKEYWORDS = ${kwList}\nMAX_PAGES = 30\nGALL_ID = "first_descendant"\nPOS = ["좋다","좋네","좋음","굿","재밌","최고","만족","감사","잘만","멋짐"]\nNEG = ["별로","싫다","싫어","쓰레기","망함","노잼","화남","짜증","답없"]\nIMP = ["했으면","필요","요청","제안","기타","바람","바랍","원함","원해","부탁"]\n\ndef get_sentiment(t):\n    t = t.lower()\n    p = sum(1 for w in POS if w in t)\n    n = sum(1 for w in NEG if w in t)\n    i = sum(1 for w in IMP if w in t)\n    if i > max(p,n): return "기타"\n    if n > p: return "부정"\n    return "긍정" if p > 0 else "기타"\n\ndef parse_date(s):\n    if not s: return None\n    s = s.strip()\n    m = re.match(r"^(\\d{4})[.\\-](\\d{1,2})[.\\-](\\d{1,2})", s)\n    if m: return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()\n    if re.match(r"^\\d{2}:\\d{2}$", s): return datetime.now().date()\n    m = re.match(r"^(\\d{1,2})\\.(\\d{1,2})$", s)\n    if m: return datetime(datetime.now().year, int(m.group(1)), int(m.group(2))).date()\n    return None\n\nprint("=" * 48)\nprint("  DC Gallery Crawler (TFD Insight)")\nprint(f"  Period: {DATE_START} ~ {DATE_END}")\nif KEYWORDS: print(f"  Keywords: {', '.join(KEYWORDS)}")\nelse: print("  Keywords: (all)")\nprint("=" * 48)\nsession = requests.Session()\nsession.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36", "Referer": "https://gall.dcinside.com/"})\nd_start = datetime.fromisoformat(DATE_START).date()\nd_end = datetime.fromisoformat(DATE_END).date()\nposts = []\nfor page in range(1, MAX_PAGES + 1):\n    url = f"https://gall.dcinside.com/mgallery/board/lists/?id={GALL_ID}&page={page}"\n    print(f"[dc] page {page}...")\n    try:\n        r = session.get(url, timeout=15)\n        if r.status_code != 200: break\n    except Exception as e:\n        print(f"  Failed: {e}"); break\n    soup = BeautifulSoup(r.text, "html.parser")\n    found = 0\n    too_old = 0\n    for row in soup.select("tr.ub-content.us-post"):\n        try:\n            subj = row.select_one("td.gall_subject")\n            if subj and subj.get_text(strip=True) in ("공지","설문","AD"): continue\n            title_el = row.select_one("td.gall_tit a")\n            if not title_el: continue\n            title = title_el.get_text(strip=True)\n            if not title: continue\n            href = title_el.get("href","")\n            if not href.startswith("http"): href = "https://gall.dcinside.com" + href\n            date_el = row.select_one("td.gall_date")\n            ds = date_el.get("title","") or date_el.get_text(strip=True) if date_el else ""\n            pd = parse_date(ds)\n            if pd is None: pd = datetime.now().date()\n            if pd > d_end: continue\n            if pd < d_start: too_old += 1; continue\n            matched = []\n            if KEYWORDS:\n                tl = title.lower()\n                matched = [k for k in KEYWORDS if k.lower() in tl]\n                if not matched: continue\n            rec = row.select_one("td.gall_recommend")\n            uv = 0\n            if rec:\n                try: uv = int(rec.get_text(strip=True) or 0)\n                except: pass\n            posts.append({"id": len(posts)+1, "source": "DC갤러리", "type": "post", "text": title, "date": pd.strftime("%Y-%m-%d"), "upvotes": uv, "url": href, "tags": matched, "sentiment": get_sentiment(title)})\n            found += 1\n        except: continue\n    print(f"  -> {found} items")\n    if too_old > 5:\n        print(f"  Date range exceeded, stopping.")\n        break\n    time.sleep(0.8)\nwith open("dc_data.json", "w", encoding="utf-8") as f:\n    json.dump(posts, f, ensure_ascii=False, indent=2)\nprint(f"\\n[Done] {len(posts)} items -> dc_data.json")\nprint("Upload this file in TFD Insight DC tab.")\ninput("\\nPress Enter to exit...")\n`;
+                    const pyBlob = new Blob([pyCode], { type: "text/x-python;charset=utf-8" });
+                    const pyUrl = URL.createObjectURL(pyBlob);
+                    const a1 = document.createElement("a"); a1.href = pyUrl; a1.download = "dc_crawler.py"; a1.click();
+                    URL.revokeObjectURL(pyUrl);
+                    // bat 파일 다운로드
+                    setTimeout(() => {
+                      const batCode = "@echo off\r\nchcp 65001 >nul\r\npip install requests beautifulsoup4 --quiet 2>nul\r\npython dc_crawler.py\r\npause\r\n";
+                      const batBlob = new Blob([batCode], { type: "application/octet-stream" });
+                      const batUrl = URL.createObjectURL(batBlob);
+                      const a2 = document.createElement("a"); a2.href = batUrl; a2.download = "dc_crawl.bat"; a2.click();
+                      URL.revokeObjectURL(batUrl);
+                      showToast("success", "dc_crawl.bat + dc_crawler.py 다운로드 완료 — 같은 폴더에 두고 bat을 더블클릭하세요");
+                    }, 500);
+                  }} style={{
+                    padding: "8px 20px", borderRadius: 50, border: "1px solid rgba(96,165,250,.3)", background: "rgba(96,165,250,.08)",
+                    color: "#60A5FA", fontSize: 12, fontWeight: 500, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6,
+                  }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                    수집기 다운로드 (bat + py)
+                  </button>
+                  {/* JSON 업로드 */}
+                  <label style={{
+                    padding: "8px 20px", borderRadius: 50, border: "1px solid rgba(52,211,153,.3)", background: "rgba(52,211,153,.08)",
+                    color: "#34D399", fontSize: 12, fontWeight: 500, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6,
+                  }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                    JSON 업로드
+                    <input type="file" accept=".json" onChange={handleUploadJSON} style={{ display: "none" }} />
+                  </label>
+                </div>
+              </details>
+            </div>
+
+            {/* 감성 + 타입 통계 */}
+            {filteredData.length > 0 && (
+              <div style={{ ...glass, padding: 24, marginBottom: 20 }}>
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 11, color: "#a1a1aa" }}>감성:</span>
+                    {SENTS.map(s => {
+                      const c = filteredData.filter(d => d.sentiment === s).length;
+                      return c > 0 ? <span key={s} style={{ padding: "3px 10px", borderRadius: 50, fontSize: 11, background: SC[s] + "15", color: SC[s] }}>{s} {c}</span> : null;
+                    })}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 11, color: "#a1a1aa" }}>타입:</span>
+                    <span style={{ padding: "3px 10px", borderRadius: 50, fontSize: 11, background: "rgba(167,139,250,.12)", color: "#a78bfa" }}>본문 {filteredData.filter(d => d.type === "post").length}</span>
+                    <span style={{ padding: "3px 10px", borderRadius: 50, fontSize: 11, background: "rgba(129,140,248,.12)", color: "#818cf8" }}>댓글 {filteredData.filter(d => d.type === "comment").length}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 필터 + 목록 */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20, alignItems: "center" }}>
+              <Sel label="감성" v={fSe} set={setFSe} opts={["all", ...SENTS]} />
+              <Sel label="타입" v={fType} set={setFType} opts={["all", "post", "comment"]} />
+              <span style={{ fontSize: 11, color: "#a1a1aa" }}>{filteredData.length} results</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {filteredData.length === 0 && <div style={{ ...glass, padding: 40, textAlign: "center", color: "#a1a1aa", fontSize: 13 }}>DC갤러리 데이터가 없습니다. Crawl Now로 수집하세요.</div>}
+              {filteredData.map(post => <PostCard key={post.id || Math.random()} post={post} onOpen={() => openLink(post.url)} />)}
+            </div>
+          </div>
+        )}
+
+
+        {/* ===== DASHBOARD ===== */}
+        {tab === "dashboard" && (
+          <div style={an(.1)}>
+            {/* Stats row */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 20 }}>
+              {SENTS.map(s => {
+                const count = dashData.filter(d => d.sentiment === s).length;
+                const pct = dashData.length > 0 ? ((count / dashData.length) * 100).toFixed(0) : 0;
+                return (
+                  <div key={s} style={{ ...glass, padding: "20px 24px" }}>
+                    <div style={{ fontSize: 10, letterSpacing: 3, color: "#a1a1aa", textTransform: "uppercase", marginBottom: 16 }}>{s}</div>
+                    <div style={{ fontSize: 28, fontWeight: 600, color: SC[s], letterSpacing: -1 }}>
+                      {count} <span style={{ fontSize: 13, color: "#a1a1aa", fontWeight: 400 }}>/ {dashData.length}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#a1a1aa", marginTop: 4 }}>{pct}%</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Timeline */}
+            <div style={{ ...glass, padding: 28, marginBottom: 16 }}>
+              <div style={{ fontSize: 10, letterSpacing: 3, color: "#a1a1aa", textTransform: "uppercase", marginBottom: 20 }}>Sentiment timeline</div>
+              <ResponsiveContainer width="100%" height={220}>
+                <AreaChart data={timeline}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,.04)" />
+                  <XAxis dataKey="date" tick={{ fill: "#71717a", fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: "#71717a", fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <Tooltip content={<CTip />} />
+                  {SENTS.map(s => <Area key={s} type="monotone" dataKey={s} stackId="1" stroke={SC[s]} fill={SC[s] + "33"} />)}
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Source comparison + Keyword breakdown */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+              <div style={{ ...glass, padding: 28 }}>
+                <div style={{ fontSize: 10, letterSpacing: 3, color: "#a1a1aa", textTransform: "uppercase", marginBottom: 20 }}>Source comparison</div>
+                <ResponsiveContainer width="100%" height={180}>
+                  <BarChart data={srcBars} layout="vertical">
+                    <XAxis type="number" tick={{ fill: "#71717a", fontSize: 10 }} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="name" tick={{ fill: "#d4d4d8", fontSize: 12 }} axisLine={false} tickLine={false} width={70} />
+                    <Tooltip content={<CTip />} />
+                    {SENTS.map(s => <Bar key={s} dataKey={s} stackId="a" fill={SC[s]} radius={[0, 4, 4, 0]} />)}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ ...glass, padding: 28 }}>
+                <div style={{ fontSize: 10, letterSpacing: 3, color: "#a1a1aa", textTransform: "uppercase", marginBottom: 20 }}>Sentiment ratio</div>
+                <ResponsiveContainer width="100%" height={180}>
+                  <PieChart>
+                    <Pie data={pie.filter(p => p.value > 0)} cx="50%" cy="50%" innerRadius={50} outerRadius={75} dataKey="value" stroke="none">
+                      {pie.filter(p => p.value > 0).map((e, i) => <Cell key={i} fill={SC[e.name]} />)}
+                    </Pie>
+                    <Tooltip content={<CTip />} />
+                    <Legend formatter={v => <span style={{ color: "#d4d4d8", fontSize: 11 }}>{v}</span>} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Keyword breakdown */}
+            {bars.length > 0 && (
+              <div style={{ ...glass, padding: 28 }}>
+                <div style={{ fontSize: 10, letterSpacing: 3, color: "#a1a1aa", textTransform: "uppercase", marginBottom: 20 }}>Keyword × sentiment</div>
+                <ResponsiveContainer width="100%" height={Math.max(180, bars.length * 36)}>
+                  <BarChart data={bars} layout="vertical">
+                    <XAxis type="number" tick={{ fill: "#71717a", fontSize: 10 }} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="name" tick={{ fill: "#d4d4d8", fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
+                    <Tooltip content={<CTip />} />
+                    {SENTS.map(s => <Bar key={s} dataKey={s} stackId="a" fill={SC[s]} radius={[0, 4, 4, 0]} />)}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ===== REPORT TAB ===== */}
+        {tab === "report" && (
+          <div style={an(.1)}>
+            <div style={{ ...glass, padding: 24, marginBottom: 20 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: "#e4e4e7", marginBottom: 4 }}>커뮤니티 분석 보고서</div>
+                  <div style={{ fontSize: 12, color: "#a1a1aa" }}>Gemini AI가 수집된 게시글을 분석하여 종합 보고서를 생성합니다.</div>
+                </div>
+                <button onClick={doReport} disabled={reportStatus === "loading"}
+                  style={{
+                    padding: "10px 24px", borderRadius: 50, fontSize: 13, fontWeight: 500,
+                    border: "1px solid rgba(168,85,247,.3)", background: "rgba(168,85,247,.1)",
+                    color: "#a855f7", cursor: reportStatus !== "loading" ? "pointer" : "default",
+                    opacity: reportStatus === "loading" ? 0.6 : 1, transition: "all .3s",
+                    display: "flex", alignItems: "center", gap: 6,
+                  }}>
+                  <span style={{ fontSize: 14 }}>📝</span>
+                  {reportStatus === "loading" ? "보고서 생성 중... (30초~1분)" : "보고서 생성"}
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: "#a1a1aa" }}>
+                Reddit {redditData.length}건 + DC {dcData.length}건 = 총 {dataset.length}건 분석 대상
+              </div>
+            </div>
+
+            {reportText ? (
+              <div style={{ ...glass, padding: 32 }}>
+                <div style={{ fontSize: 14, lineHeight: 2, color: "#d4d4d8", whiteSpace: "pre-wrap" }}>
+                  {reportText.split("\n").map((line, i) => {
+                    // 마크다운 링크 [text](url) → 클릭 가능 링크로 변환
+                    const renderLine = (text) => {
+                      const parts = [];
+                      let lastIdx = 0;
+                      const linkRe = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g;
+                      let m;
+                      while ((m = linkRe.exec(text)) !== null) {
+                        if (m.index > lastIdx) parts.push(text.slice(lastIdx, m.index));
+                        parts.push(<a key={m.index} href={m[2]} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "underline", cursor: "pointer" }}>{m[1]}</a>);
+                        lastIdx = m.index + m[0].length;
+                      }
+                      if (lastIdx < text.length) parts.push(text.slice(lastIdx));
+                      return parts.length > 0 ? parts : text;
+                    };
+                    const clean = (t) => t.replace(/\*\*(.*?)\*\*/g, "$1");
+                    if (line.startsWith("# ")) return <div key={i} style={{ fontSize: 20, fontWeight: 700, color: "#e4e4e7", marginTop: 24, marginBottom: 12 }}>{renderLine(clean(line.replace(/^#+\s*/, "")))}</div>;
+                    if (line.startsWith("## ")) return <div key={i} style={{ fontSize: 16, fontWeight: 600, color: "#e4e4e7", marginTop: 20, marginBottom: 8 }}>{renderLine(clean(line.replace(/^#+\s*/, "")))}</div>;
+                    if (line.startsWith("### ")) return <div key={i} style={{ fontSize: 14, fontWeight: 600, color: "#d4d4d8", marginTop: 16, marginBottom: 6 }}>{renderLine(clean(line.replace(/^#+\s*/, "")))}</div>;
+                    if (line.startsWith("**") && line.endsWith("**")) return <div key={i} style={{ fontSize: 14, fontWeight: 600, color: "#e4e4e7", marginTop: 12 }}>{renderLine(clean(line))}</div>;
+                    if (line.startsWith("- ") || line.startsWith("* ")) return <div key={i} style={{ paddingLeft: 16, position: "relative" }}><span style={{ position: "absolute", left: 0, color: "#a1a1aa" }}>•</span>{renderLine(clean(line.replace(/^[-*]\s*/, "")))}</div>;
+                    if (line.match(/^\d+\.\s/)) return <div key={i} style={{ paddingLeft: 16 }}>{renderLine(clean(line))}</div>;
+                    if (line.trim() === "") return <div key={i} style={{ height: 8 }} />;
+                    return <div key={i}>{renderLine(clean(line))}</div>;
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div style={{ ...glass, padding: 60, textAlign: "center" }}>
+                <div style={{ fontSize: 40, marginBottom: 16 }}>📝</div>
+                <div style={{ fontSize: 14, color: "#a1a1aa", marginBottom: 8 }}>아직 보고서가 없습니다</div>
+                <div style={{ fontSize: 12, color: "#a1a1aa" }}>먼저 Crawl Now로 데이터를 수집한 뒤, 위의 "보고서 생성" 버튼을 클릭하세요.</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ===== KEYWORDS TAB ===== */}
+        {tab === "keywords" && (
+          <div style={an(.1)}>
+            {/* Mode toggle */}
+            <div style={{ display: "flex", gap: 4, padding: 3, borderRadius: 50, background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.06)", marginBottom: 24, width: "fit-content" }}>
+              {[{ id: "manage", label: "수동 관리" }, { id: "discover", label: "키워드 발견" }].map(m => (
+                <button key={m.id} onClick={() => setKwMode(m.id)} style={{
+                  padding: "9px 20px", borderRadius: 50, fontSize: 12, border: "none",
+                  background: kwMode === m.id ? "rgba(255,255,255,.08)" : "transparent",
+                  color: kwMode === m.id ? "#e4e4e7" : "#a1a1aa",
+                  cursor: "pointer", transition: "all .2s", letterSpacing: .3, fontWeight: kwMode === m.id ? 500 : 400,
+                }}>{m.label}</button>
+              ))}
+            </div>
+
+            {/* 키워드 발견 모드 */}
+            {kwMode === "discover" && (
+              <div>
+                <div style={{ ...glass, padding: 28, marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, color: "#d4d4d8", marginBottom: 16, lineHeight: 1.7 }}>
+                    Reddit / DC갤러리에서 최신 게시글을 수집하고, <b style={{ color: "#60A5FA" }}>자주 등장하는 키워드</b>를 자동으로 추출합니다.
+                  </div>
+                  <button onClick={doDiscover} disabled={discoverStatus === "loading"}
+                    style={{
+                      padding: "12px 28px", borderRadius: 50, fontSize: 13, fontWeight: 500,
+                      border: "1px solid rgba(52,211,153,.3)", background: "rgba(52,211,153,.1)", color: "#34D399",
+                      cursor: discoverStatus !== "loading" ? "pointer" : "default", transition: "all .3s",
+                      display: "flex", alignItems: "center", gap: 8,
+                    }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+                    {discoverStatus === "loading" ? "수집 + 분석 중... (최대 1분)" : "키워드 발견 시작"}
+                  </button>
+                </div>
+
+                {discoverStatus === "done" && discoveredWords.length > 0 && (
+                  <div style={{ ...glass, padding: 28, marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, color: "#d4d4d8", marginBottom: 16, lineHeight: 1.7 }}>
+                      수집된 게시글에서 <b style={{ color: "#60A5FA" }}>자주 등장한 단어</b>입니다. 등록할 키워드를 선택하세요.
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 20 }}>
+                      {discoveredWords.map((w, i) => {
+                        const isSel = selectedDiscovered.has(w.word);
+                        return (
+                          <button key={i} onClick={() => {
+                            setSelectedDiscovered(prev => { const next = new Set(prev); if (next.has(w.word)) next.delete(w.word); else next.add(w.word); return next; });
+                          }} style={{
+                            padding: "7px 14px", borderRadius: 50, fontSize: 12,
+                            border: `1px solid ${isSel ? "rgba(96,165,250,.4)" : "rgba(255,255,255,.08)"}`,
+                            background: isSel ? "rgba(96,165,250,.15)" : "rgba(255,255,255,.02)",
+                            color: isSel ? "#60A5FA" : "#d4d4d8",
+                            cursor: "pointer", transition: "all .2s", display: "inline-flex", alignItems: "center", gap: 6,
+                          }}>
+                            {w.word} <span style={{ fontSize: 10, color: isSel ? "#60A5FA" : "#a1a1aa" }}>{w.count}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {selectedDiscovered.size > 0 && (
+                      <button onClick={registerDiscovered} style={{
+                        padding: "10px 24px", borderRadius: 50, border: "1px solid rgba(52,211,153,.3)",
+                        background: "rgba(52,211,153,.12)", color: "#34D399", fontSize: 12, fontWeight: 500, cursor: "pointer",
+                      }}>
+                        {selectedDiscovered.size}개 키워드 등록
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {discoverStatus === "done" && discoveredWords.length === 0 && (
+                  <div style={{ ...glass, padding: 40, textAlign: "center", color: "#a1a1aa", fontSize: 13 }}>
+                    발견된 키워드가 없습니다. 날짜 범위를 확인해보세요.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 수동 관리 모드 */}
+            {kwMode === "manage" && (
+              <div>
+                <div style={{ ...glass, padding: 28, marginBottom: 20 }}>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <input value={newKw} onChange={e => setNewKw(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter" && newKw.trim()) { setKeywords(p => [...new Set([...p, newKw.trim()])]); setNewKw(""); } }}
+                      placeholder="키워드 입력 (예: turret, 포탑, onslaught...)"
+                      style={{ flex: 1, padding: "10px 16px", borderRadius: 10, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.02)", color: "#d4d4d8", fontSize: 13, outline: "none" }} />
+                    <button onClick={() => { if (newKw.trim()) { setKeywords(p => [...new Set([...p, newKw.trim()])]); setNewKw(""); } }}
+                      style={{ padding: "10px 24px", borderRadius: 50, border: "1px solid rgba(52,211,153,.2)", background: "rgba(52,211,153,.06)", color: "#34D399", fontSize: 12, fontWeight: 500, cursor: "pointer" }}>+ 추가</button>
+                  </div>
+                </div>
+
+                <div style={{ ...glass, padding: 28 }}>
+                  <div style={{ fontSize: 11, color: "#a1a1aa", marginBottom: 16 }}>등록된 키워드 ({keywords.length}개) — OR 매칭: 하나라도 포함되면 수집</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {keywords.length === 0 && <div style={{ fontSize: 13, color: "#a1a1aa" }}>키워드를 추가하세요</div>}
+                    {keywords.map((kw, i) => (
+                      <div key={kw + i} style={{
+                        display: "flex", alignItems: "center", gap: 8,
+                        padding: "8px 16px", borderRadius: 50,
+                        border: "1px solid rgba(96,165,250,.25)",
+                        background: "rgba(96,165,250,.08)",
+                        color: "#60A5FA", fontSize: 13, letterSpacing: .3,
+                      }}>
+                        <span>{kw}</span>
+                        <span onClick={() => setKeywords(p => p.filter((_, j) => j !== i))} style={{ cursor: "pointer", color: "#a1a1aa", fontSize: 14, lineHeight: 1 }}>x</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{ marginTop: 48, paddingTop: 20, borderTop: "1px solid rgba(255,255,255,.06)", display: "flex", justifyContent: "space-between", fontSize: 10, color: "#a1a1aa", letterSpacing: .5 }}>
+          <span>TFD Insight v2.0</span>
+          <span>The First Descendant Community Intelligence</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============== PostCard component ==============
+function PostCard({ post, onOpen }) {
+  const [hover, setHover] = useState(false);
+  const isComment = post.type === "comment";
+  return (
+    <div onClick={onOpen}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      style={{
+        background: hover ? "rgba(255,255,255,.04)" : "rgba(255,255,255,.02)",
+        border: `1px solid ${hover ? "rgba(255,255,255,.12)" : "rgba(255,255,255,.06)"}`,
+        borderRadius: 14, padding: isComment ? "12px 20px 12px 32px" : "16px 20px", cursor: "pointer",
+        transition: "all .2s", borderLeft: isComment ? "3px solid rgba(129,140,248,.3)" : undefined,
+      }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <span style={{ padding: "3px 10px", borderRadius: 50, fontSize: 10, fontWeight: 500, letterSpacing: .3, background: SRC_C[post.source] + "12", color: SRC_C[post.source] }}>{post.source}</span>
+        <span style={{ padding: "3px 10px", borderRadius: 50, fontSize: 10, fontWeight: 500, background: (isComment ? "rgba(129,140,248,.12)" : "rgba(167,139,250,.12)"), color: isComment ? "#818cf8" : "#a78bfa" }}>{isComment ? "댓글" : "본문"}</span>
+        {post.sentiment && <span style={{ padding: "3px 10px", borderRadius: 50, fontSize: 10, fontWeight: 500, background: SC[post.sentiment] + "12", color: SC[post.sentiment] }}>{post.sentiment}</span>}
+        {(post.tags || []).map(t => (
+          <span key={t} style={{ padding: "3px 10px", borderRadius: 50, fontSize: 10, fontWeight: 600, background: "rgba(52,211,153,.1)", color: "#34D399", border: "1px solid rgba(52,211,153,.2)" }}>🔑 {t}</span>
+        ))}
+        <span style={{ marginLeft: "auto", display: "flex", gap: 12, alignItems: "center" }}>
+          <span style={{ fontSize: 10, color: "#a1a1aa" }}>↑ {post.upvotes}</span>
+          <span style={{ fontSize: 10, color: "#a1a1aa", fontVariantNumeric: "tabular-nums" }}>{post.date}</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={hover ? "#d4d4d8" : "#52525b"} strokeWidth="1.5" style={{ transition: "all .2s" }}>
+            <path d="M7 17L17 7M17 7H8M17 7V16"/>
+          </svg>
+        </span>
+      </div>
+      {isComment && post.parent_title && (
+        <div style={{ fontSize: 11, color: "#a1a1aa", marginBottom: 6, fontStyle: "italic" }}>↳ {post.parent_title}</div>
+      )}
+      <div style={{ fontSize: 14, lineHeight: 1.7, color: "#d4d4d8" }}>{post.text}</div>
+    </div>
+  );
+}
+
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(React.createElement(App));
+
+      setTimeout(function() {
+        window.__loadingEl.classList.add('hidden');
+        setTimeout(function() { if (window.__loadingEl) window.__loadingEl.remove(); }, 500);
+      }, 200);
+    } catch (err) {
+      window.__showError('App Render Error', (err && err.stack) || err);
+    }
+  </script>
+</body>
+</html>
