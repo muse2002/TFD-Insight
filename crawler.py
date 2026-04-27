@@ -366,7 +366,7 @@ def crawl_dc(cfg):
         "Referer": "https://gall.dcinside.com/",
     })
 
-    max_pages = 30   # 무한 루프 방지
+    max_pages = 50   # 무한 루프 방지
     for page in range(1, max_pages + 1):
         list_url = f"https://gall.dcinside.com/mgallery/board/lists/?id={gall_id}&page={page}"
         try:
