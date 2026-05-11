@@ -349,19 +349,26 @@ def report():
             timeout=60,
         )
         if r.status_code != 200:
-            return jsonify({"error": f"Gemini API 에러 {r.status_code}"}), 500
+            print(f"[report] Gemini API 에러 {r.status_code}: {r.text[:500]}")
+            return jsonify({"error": f"Gemini API 에러 {r.status_code}", "detail": r.text[:300]}), 500
 
         data = r.json()
+        print(f"[report] Gemini 응답 keys: {list(data.keys())}")
         candidates = data.get("candidates", [])
-        if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if parts:
-                report_text = parts[0].get("text", "").strip()
-                return jsonify({"ok": True, "report": report_text})
+        if not candidates:
+            print(f"[report] candidates 비어있음. 전체 응답: {str(data)[:500]}")
+            return jsonify({"error": "Gemini 응답에 결과 없음", "detail": str(data)[:300]}), 500
 
-        return jsonify({"error": "보고서 생성 실패"}), 500
+        parts = candidates[0].get("content", {}).get("parts", [])
+        if not parts:
+            print(f"[report] parts 비어있음. candidate: {str(candidates[0])[:500]}")
+            return jsonify({"error": "Gemini 응답에 텍스트 없음", "detail": str(candidates[0])[:300]}), 500
+
+        report_text = parts[0].get("text", "").strip()
+        return jsonify({"ok": True, "report": report_text})
 
     except Exception as e:
+        print(f"[report] 예외 발생: {e}")
         return jsonify({"error": str(e)}), 500
 
 
